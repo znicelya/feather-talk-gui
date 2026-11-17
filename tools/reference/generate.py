@@ -108,19 +108,39 @@ def generate_reference(source_dir: Path, assets: Path, output_dir: Path) -> Path
     scrfd_input = torch.linspace(-1,1,3*640*640).reshape(1,3,640,640)
     outputs = session.run(None,{session.get_inputs()[0].name:scrfd_input.numpy()})
     save('scrfd_2_5g',{'input.0':scrfd_input,**{o.name:torch.from_numpy(v) for o,v in zip(session.get_outputs(), outputs)}}, {'provider':'CPUExecutionProvider','input_name':session.get_inputs()[0].name,'output_order':[o.name for o in session.get_outputs()]},'network')
+    landmarks = np.zeros((110,2),dtype=np.int32)
+    landmarks[1] = [20,40]; landmarks[31] = [180,40]; landmarks[52] = [90,30]
+    landmarks[90:] = np.stack([np.arange(20)*3+65,np.arange(20)%4*4+110],axis=1)
+    frame = (np.arange(220*240*3)%256).astype(np.uint8).reshape(220,240,3)
+    bbox = face.compute_face_bbox(landmarks)
+    crop = face.crop_face(frame,bbox)
+    inner = face.extract_inner(crop)
     # Freeze all initial character parameters, rather than requiring identical RNGs in Rust.
     torch.manual_seed(SEED)
     character = visual.Model()
     save('character_initial_state', character.state_dict(), {'architecture':'FeatherTalk.Model','image_size':144,'n_channels':6,'audio_tokens':40,'audio_dim':1024,'seed':SEED}, 'exact')
-    image = torch.rand(2,6,144,144,requires_grad=True)
-    audio = torch.randn(2,40,1024,requires_grad=True)
+    # Mirror TemporalMouthRoiDataset: one reference, two adjacent targets,
+    # source mouth masking and landmark ROI masks from those same targets.
+    reference_bgr = face.extract_inner(face.crop_face(np.roll(frame,9,axis=1),bbox))
+    reference = face.hwc_to_chw_tensor(reference_bgr)
+    pair_frames = np.stack([frame,np.roll(frame,1,axis=1)])
+    pair_landmarks = np.stack([landmarks,landmarks.copy()])
+    pair_landmarks[1,90:] += [2,1]
+    targets, masked_targets, mouth_masks = [], [], []
+    for target_frame, points in zip(pair_frames,pair_landmarks):
+        target_inner = face.extract_inner(face.crop_face(target_frame,face.compute_face_bbox(points)))
+        targets.append(face.hwc_to_chw_tensor(target_inner.copy()))
+        masked_targets.append(face.hwc_to_chw_tensor(face.mask_mouth(target_inner.copy())))
+        mouth_masks.append(roi.mouth_mask_from_landmarks(points,roi.MouthRoiConfig()))
+    labels = torch.stack(targets)[None]
+    masks = torch.stack(mouth_masks)[None]
+    image = torch.stack([torch.cat([reference,masked],dim=0) for masked in masked_targets]).requires_grad_()
+    assert torch.equal(image[0,:3],image[1,:3]), 'Adjacent frames must share one reference'
+    audio_features = torch.randn(22,2,1024).numpy()
+    audio = torch.stack([face.reshape_audio_feat(face.gather_audio_window(audio_features,index)) for index in (10,11)]).requires_grad_()
     network('character_eval',character,(image.detach(),audio.detach()),['inc','down2','down4','audio_model','spatial_x3','fuse_conv','up4','outc'])
     character.train()
     prediction = character(image,audio)
-    labels = torch.rand(1,2,3,144,144)
-    masks = torch.zeros(1,2,1,144,144)
-    masks[:,0,:,65:115,35:105] = 1
-    masks[:,1,:,70:120,38:108] = 1
     perceptual = train.PerceptualLoss.__new__(train.PerceptualLoss)
     perceptual.content, perceptual.criterion = vgg, torch.nn.MSELoss()
     total, parts = train.compute_total_loss(prediction.reshape(1,2,3,144,144),labels,masks,torch.nn.L1Loss(),perceptual,4.0,0.5,4.0,0.01,0.5,5)
@@ -129,9 +149,9 @@ def generate_reference(source_dir: Path, assets: Path, output_dir: Path) -> Path
     # Select by module families while retaining actual source names in the index.
     chosen = [next(k for k,p in named.items() if k.startswith(prefix) and p.grad is not None) for prefix in ['inc.','audio_model.','spatial_x3.query.','spatial_x5.residual_gate','outc.']]
     save('character_training',{'image':image,'audio':audio,'labels':labels,'masks':masks,'prediction':prediction,'total':total,
-        'image_gradient':image.grad,'audio_gradient':audio.grad,**{'loss.'+k:torch.tensor(v) for k,v in parts.items()},
+        'image_gradient':image.grad,'audio_gradient':audio.grad,'pair_frames_bgr':pair_frames,'pair_landmarks':pair_landmarks,'reference_bgr':reference_bgr,**{'loss.'+k:torch.tensor(v) for k,v in parts.items()},
         **{'gradient.'+k:named[k].grad for k in chosen}, **{'updated_state.'+k:v for k,v in character.state_dict().items() if 'running_' in k or 'num_batches_tracked' in k}},
-        {'mode':'train','pair_shape':[1,2],'loss_coefficients':{'full':1,'mouth':4,'temp':0.5,'temp_mouth':4,'percep':0.01,'mouth_grad':0.5},'temporal_lowpass_kernel':5,'gradients':chosen}, 'gradient')
+        {'mode':'train','pair_shape':[1,2],'frame_indices':[10,11],'shared_reference':True,'input_channel_order':['reference_Bgr','masked_target_Bgr'],'target_source':'deterministic geometry frame and one-pixel shift','loss_coefficients':{'full':1,'mouth':4,'temp':0.5,'temp_mouth':4,'percep':0.01,'mouth_grad':0.5},'temporal_lowpass_kernel':5,'gradients':chosen}, 'gradient')
     # Independent derivatives isolate each original loss's backward semantics.
     pred = prediction.detach().clone().reshape_as(labels).requires_grad_()
     flat, target, flat_masks = pred.flatten(0,1), labels.flatten(0,1), masks.flatten(0,1)
@@ -150,13 +170,6 @@ def generate_reference(source_dir: Path, assets: Path, output_dir: Path) -> Path
         loss, detail = train.compute_total_loss(pred,labels,mask,torch.nn.L1Loss(),perceptual,4,0.5 if temporal else 0,4 if temporal else 0,0.01,0.5,5)
         loss.backward()
         save('loss_'+case,{'prediction':pred,'labels':labels,'masks':mask,'total':loss,'gradient':pred.grad,**{'loss.'+k:torch.tensor(v) for k,v in detail.items()}},{'temporal_enabled':temporal,'lowpass_kernel':5},'gradient')
-    landmarks = np.zeros((110,2),dtype=np.int32)
-    landmarks[1] = [20,40]; landmarks[31] = [180,40]; landmarks[52] = [90,30]
-    landmarks[90:] = np.stack([np.arange(20)*3+65,np.arange(20)%4*4+110],axis=1)
-    frame = (np.arange(220*240*3)%256).astype(np.uint8).reshape(220,240,3)
-    bbox = face.compute_face_bbox(landmarks)
-    crop = face.crop_face(frame,bbox)
-    inner = face.extract_inner(crop)
     save('geometry',{'landmarks':landmarks,'frame_bgr':frame,'bbox':torch.tensor(bbox),'crop':crop,'inner':inner,'masked':face.mask_mouth(inner.copy()),'chw':face.hwc_to_chw_tensor(inner),'fill_mask':face.mouth_fill_mask(),'roi_mask':roi.mouth_mask_from_landmarks(landmarks,roi.MouthRoiConfig()),'roi_bbox':torch.tensor(roi.mouth_roi_from_landmarks(landmarks,roi.MouthRoiConfig()))},{'crop':152,'inner':144,'color':'BGR','resize':'INTER_AREA'},'exact')
     for case, offset in [('left_top',-180),('right_bottom',180),('collapsed',0)]:
         points = landmarks.copy()

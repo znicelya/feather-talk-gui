@@ -849,7 +849,7 @@
         "mode": "eval"
       },
       "file": "character_eval.safetensors",
-      "sha256": "429ee84309dd8e033ce52af2451a60bc317ed1df42fd6df279904bc6da0e1f3a",
+      "sha256": "7083219fbecb164570413a08362d04eac36e24d438861acd5f6b2973dd7c4de1",
       "tensors": {
         "input.0": {
           "dtype": "torch.float32",
@@ -3734,12 +3734,20 @@
     },
     "character_training": {
       "configuration": {
+        "frame_indices": [
+          10,
+          11
+        ],
         "gradients": [
           "inc.inconv.conv.0.weight",
           "audio_model.norm.weight",
           "spatial_x3.query.weight",
           "spatial_x5.residual_gate",
           "outc.conv.weight"
+        ],
+        "input_channel_order": [
+          "reference_Bgr",
+          "masked_target_Bgr"
         ],
         "loss_coefficients": {
           "full": 1,
@@ -3754,10 +3762,12 @@
           1,
           2
         ],
+        "shared_reference": true,
+        "target_source": "deterministic geometry frame and one-pixel shift",
         "temporal_lowpass_kernel": 5
       },
       "file": "character_training.safetensors",
-      "sha256": "f47f97cd906c9b282437d8985b17abc002b3c0edfc64a6a859f65fd46bbb8a06",
+      "sha256": "48305ecefbc466d90c9c14089d4b30a209767fa2214b95f3af361cb0d07efa04",
       "tensors": {
         "audio": {
           "dtype": "torch.float32",
@@ -3876,6 +3886,23 @@
             144
           ]
         },
+        "pair_frames_bgr": {
+          "dtype": "torch.uint8",
+          "shape": [
+            2,
+            220,
+            240,
+            3
+          ]
+        },
+        "pair_landmarks": {
+          "dtype": "torch.int32",
+          "shape": [
+            2,
+            110,
+            2
+          ]
+        },
         "prediction": {
           "dtype": "torch.float32",
           "shape": [
@@ -3883,6 +3910,14 @@
             3,
             144,
             144
+          ]
+        },
+        "reference_bgr": {
+          "dtype": "torch.uint8",
+          "shape": [
+            144,
+            144,
+            3
           ]
         },
         "total": {
@@ -5674,7 +5709,7 @@
         "temporal_enabled": false
       },
       "file": "loss_disabled.safetensors",
-      "sha256": "65ea4e420a7bb76c78a6be28c5a824b972b3160f871ea82bc86af1459c25175c",
+      "sha256": "269bd608267d841b4d010b8805231b4cb44c2e2ca4b3e8f49899cd876dd2ddce",
       "tensors": {
         "gradient": {
           "dtype": "torch.float32",
@@ -5760,7 +5795,7 @@
         "temporal_enabled": true
       },
       "file": "loss_empty.safetensors",
-      "sha256": "6a1db70ab560bdee699fd2f3d7f221595fa66a2c08735a7a214e1d6a2d89ebc8",
+      "sha256": "bedebe14eb554bd304aa8b2a2c21d90e24e014b57d8c97c9053389117b89990c",
       "tensors": {
         "gradient": {
           "dtype": "torch.float32",
@@ -5846,7 +5881,7 @@
         "lowpass_kernel": 5
       },
       "file": "loss_individual_terms.safetensors",
-      "sha256": "20621a3f9d36b60d1bf230b276ada4d99b1cf28b474e421c3399609e6c4ce41f",
+      "sha256": "0dfe5d2616b59029fb3d178c01a47b6da8a03b32c8ac4a2182417d82211f2fa5",
       "tensors": {
         "gradient.full": {
           "dtype": "torch.float32",

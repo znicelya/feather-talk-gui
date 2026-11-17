@@ -67,6 +67,24 @@ def test_references_are_complete_and_reproducible(tmp_path):
     torch.testing.assert_close(resize['output'][...,-1,-1], resize['input.0'][...,-1,-1])
     torch.testing.assert_close(resize['input_gradient.0'].sum(), resize['upstream_gradient'].sum())
     assert resize['upstream_gradient'].std() > 0
+    character = load_file(first.parent / 'character_training.safetensors')
+    assert torch.equal(character['image'][0,:3], character['image'][1,:3])
+    assert not torch.equal(character['labels'][0,0], character['labels'][0,1])
+    import face_utils
+    import dataset_mouth_roi
+    for index in range(2):
+        target_bgr = torch.round(character['labels'][0,index] * 255).to(torch.uint8).permute(1,2,0).numpy().copy()
+        expected_masked = face_utils.hwc_to_chw_tensor(face_utils.mask_mouth(target_bgr))
+        assert torch.equal(character['image'][index,3:], expected_masked)
+        points = character['pair_landmarks'][index].numpy()
+        frame = character['pair_frames_bgr'][index].numpy()
+        expected_target = face_utils.extract_inner(face_utils.crop_face(frame,face_utils.compute_face_bbox(points)))
+        assert torch.equal(character['labels'][0,index],face_utils.hwc_to_chw_tensor(expected_target))
+        expected_roi = dataset_mouth_roi.mouth_mask_from_landmarks(points,dataset_mouth_roi.MouthRoiConfig())
+        assert torch.equal(character['masks'][0,index],expected_roi)
+    expected_reference = face_utils.hwc_to_chw_tensor(character['reference_bgr'].numpy())
+    assert torch.equal(character['image'][0,:3],expected_reference)
+    assert torch.equal(character['audio'][0,2:],character['audio'][1,:-2])
     manifest = json.loads(first.read_text())
     for key in ['resize_align_corners','batch_norm_train','batch_norm_train_second','character_training','feather_hubert','pfld_ghost_one','vgg19','scrfd_2_5g','geometry','audio_clip_first','audio_extract_320400']:
         assert key in manifest['cases']
@@ -74,19 +92,3 @@ def test_references_are_complete_and_reproducible(tmp_path):
     broken.write_bytes(broken.read_bytes()[:-1] + b'x')
     with pytest.raises(ValueError, match='digest'):
         verify_reference(first.parent)
-    from safetensors.torch import load_file
-    import torch
-    first_bn = load_file(first.parent / 'batch_norm_train.safetensors')
-    second_bn = load_file(first.parent / 'batch_norm_train_second.safetensors')
-    value = first_bn['input.0']
-    mean, variance = value.mean((0,2,3)), value.var((0,2,3), unbiased=True)
-    torch.testing.assert_close(first_bn['state.running_mean'], 0.1*mean)
-    torch.testing.assert_close(first_bn['state.running_var'], 0.9 + 0.1*variance)
-    value2 = second_bn['input.0']
-    torch.testing.assert_close(second_bn['state.running_var'], 0.9*first_bn['state.running_var'] + 0.1*value2.var((0,2,3), unbiased=True))
-    assert second_bn['state.num_batches_tracked'].item() == 2
-    resize = load_file(first.parent / 'resize_align_corners.safetensors')
-    torch.testing.assert_close(resize['output'][...,0,0], resize['input.0'][...,0,0])
-    torch.testing.assert_close(resize['output'][...,-1,-1], resize['input.0'][...,-1,-1])
-    torch.testing.assert_close(resize['input_gradient.0'].sum(), resize['upstream_gradient'].sum())
-    assert resize['upstream_gradient'].std() > 0
