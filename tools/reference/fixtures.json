@@ -1,0 +1,12 @@
+﻿{
+  "schema_version": 1,
+  "numerical_fixtures": "synthetic deterministic CPU FP32; not effect acceptance",
+  "effect_acceptance": {
+    "status": "pending_user_footage",
+    "training_video": null,
+    "training_video_sha256": null,
+    "acceptance_video": null,
+    "acceptance_video_sha256": null,
+    "reason": "User has not supplied real training and effect acceptance footage. Existing demonstration media is not an authorized character training fixture."
+  }
+}
