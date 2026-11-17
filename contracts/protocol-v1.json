@@ -1,0 +1,1455 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FeatherTalk protocol v1",
+  "description": "JSON Lines worker transport. Sequence is monotonically increasing per worker process. Ready has no task ID; every task event requires a UUID. Paths in manifests are relative to their owning project or asset root. Semantic resource checks are performed by later engine/storage layers. Non-finite metrics are forbidden on the wire.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/WorkerRequest"
+    },
+    {
+      "$ref": "#/$defs/WorkerEvent"
+    }
+  ],
+  "$defs": {
+    "TaskId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "ProjectId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "TrainingRunId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "BackendKind": {
+      "type": "string",
+      "enum": [
+        "flex",
+        "cpu",
+        "vulkan",
+        "cuda",
+        "metal"
+      ]
+    },
+    "Precision": {
+      "type": "string",
+      "enum": [
+        "f32",
+        "f16",
+        "bf16"
+      ]
+    },
+    "ErrorCode": {
+      "type": "string",
+      "enum": [
+        "invalid_config",
+        "model_mismatch",
+        "resource_missing",
+        "resource_corrupt",
+        "unsupported_backend",
+        "device_init",
+        "device_lost",
+        "out_of_memory",
+        "no_face",
+        "no_audio",
+        "encode_failed",
+        "disk_full",
+        "permission_denied",
+        "busy",
+        "protocol",
+        "cancelled",
+        "internal"
+      ]
+    },
+    "AppError": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ErrorCode"
+        },
+        "stage": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "log_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "code",
+        "stage",
+        "message",
+        "evidence",
+        "actions",
+        "log_path"
+      ],
+      "additionalProperties": false
+    },
+    "LossConfig": {
+      "type": "object",
+      "properties": {
+        "full": {
+          "type": "number",
+          "minimum": 0
+        },
+        "mouth": {
+          "type": "number",
+          "minimum": 0
+        },
+        "temporal": {
+          "type": "number",
+          "minimum": 0
+        },
+        "temporal_mouth": {
+          "type": "number",
+          "minimum": 0
+        },
+        "perceptual": {
+          "type": "number",
+          "minimum": 0
+        },
+        "mouth_gradient": {
+          "type": "number",
+          "minimum": 0
+        },
+        "temporal_kernel": {
+          "type": "integer",
+          "minimum": 1,
+          "not": {
+            "multipleOf": 2
+          }
+        },
+        "temporal_stride": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "full",
+        "mouth",
+        "temporal",
+        "temporal_mouth",
+        "perceptual",
+        "mouth_gradient",
+        "temporal_kernel",
+        "temporal_stride"
+      ],
+      "additionalProperties": false
+    },
+    "TrainConfig": {
+      "type": "object",
+      "properties": {
+        "epochs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "batch_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "lr": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "beta1": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMaximum": 1
+        },
+        "beta2": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMaximum": 1
+        },
+        "epsilon": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "weight_decay": {
+          "type": "number",
+          "minimum": 0
+        },
+        "save_every": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "loss": {
+          "$ref": "#/$defs/LossConfig"
+        }
+      },
+      "required": [
+        "epochs",
+        "batch_size",
+        "lr",
+        "beta1",
+        "beta2",
+        "epsilon",
+        "weight_decay",
+        "save_every",
+        "loss"
+      ],
+      "additionalProperties": false
+    },
+    "DeviceRequest": {
+      "type": "object",
+      "properties": {
+        "backend": {
+          "$ref": "#/$defs/BackendKind"
+        },
+        "device_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "backend",
+        "device_id"
+      ],
+      "additionalProperties": false
+    },
+    "DevicePolicy": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "policy": {
+              "const": "auto"
+            }
+          },
+          "required": [
+            "policy"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "policy": {
+              "const": "explicit"
+            },
+            "request": {
+              "$ref": "#/$defs/DeviceRequest"
+            }
+          },
+          "required": [
+            "policy",
+            "request"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "DeviceDescriptor": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "vendor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "driver": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "backend": {
+          "$ref": "#/$defs/BackendKind"
+        },
+        "memory_bytes": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "vendor",
+        "driver",
+        "backend",
+        "memory_bytes"
+      ],
+      "additionalProperties": false
+    },
+    "ModelIdentity": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "architecture_version": {
+          "type": "string"
+        },
+        "source_sha256": {
+          "type": "string"
+        },
+        "weights_sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "architecture_version",
+        "source_sha256",
+        "weights_sha256"
+      ],
+      "additionalProperties": false
+    },
+    "ModelRef": {
+      "type": "object",
+      "properties": {
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "run_id": {
+          "$ref": "#/$defs/TrainingRunId"
+        },
+        "checkpoint_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id",
+        "run_id",
+        "checkpoint_id"
+      ],
+      "additionalProperties": false
+    },
+    "TrainRequest": {
+      "type": "object",
+      "properties": {
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "config": {
+          "$ref": "#/$defs/TrainConfig"
+        },
+        "device": {
+          "$ref": "#/$defs/DevicePolicy"
+        },
+        "resume": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "project_id",
+        "config",
+        "device",
+        "resume"
+      ],
+      "additionalProperties": false
+    },
+    "GenerateRequest": {
+      "type": "object",
+      "properties": {
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "audio_path": {
+          "type": "string"
+        },
+        "output_path": {
+          "type": "string"
+        },
+        "model_ref": {
+          "$ref": "#/$defs/ModelRef"
+        },
+        "device": {
+          "$ref": "#/$defs/DevicePolicy"
+        }
+      },
+      "required": [
+        "project_id",
+        "audio_path",
+        "output_path",
+        "model_ref",
+        "device"
+      ],
+      "additionalProperties": false
+    },
+    "JobSpec": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "train"
+            },
+            "request": {
+              "$ref": "#/$defs/TrainRequest"
+            }
+          },
+          "required": [
+            "kind",
+            "request"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "generate"
+            },
+            "request": {
+              "$ref": "#/$defs/GenerateRequest"
+            }
+          },
+          "required": [
+            "kind",
+            "request"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "JobKind": {
+      "type": "string",
+      "enum": [
+        "train",
+        "generate"
+      ]
+    },
+    "WorkerRequest": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "hello"
+            },
+            "protocol_version": {
+              "const": 1
+            }
+          },
+          "required": [
+            "type",
+            "protocol_version"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "start"
+            },
+            "task_id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "job": {
+              "$ref": "#/$defs/JobSpec"
+            }
+          },
+          "required": [
+            "type",
+            "task_id",
+            "job"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "cancel"
+            },
+            "task_id": {
+              "$ref": "#/$defs/TaskId"
+            }
+          },
+          "required": [
+            "type",
+            "task_id"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "shutdown"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "ComponentCapability": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "available": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "available"
+      ],
+      "additionalProperties": false
+    },
+    "WorkerCapabilities": {
+      "type": "object",
+      "properties": {
+        "engine_version": {
+          "type": "string"
+        },
+        "components": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ComponentCapability"
+          }
+        },
+        "training": {
+          "type": "boolean"
+        },
+        "generation": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "engine_version",
+        "components",
+        "training",
+        "generation"
+      ],
+      "additionalProperties": false
+    },
+    "LossScalars": {
+      "type": "object",
+      "properties": {
+        "full": {
+          "type": "number"
+        },
+        "mouth": {
+          "type": "number"
+        },
+        "temporal": {
+          "type": "number"
+        },
+        "temporal_mouth": {
+          "type": "number"
+        },
+        "perceptual": {
+          "type": "number"
+        },
+        "mouth_gradient": {
+          "type": "number"
+        },
+        "total": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "full",
+        "mouth",
+        "temporal",
+        "temporal_mouth",
+        "perceptual",
+        "mouth_gradient",
+        "total"
+      ],
+      "additionalProperties": false
+    },
+    "TrainingMetrics": {
+      "type": "object",
+      "properties": {
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "run_id": {
+          "$ref": "#/$defs/TrainingRunId"
+        },
+        "step": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "epoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "elapsed_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lr": {
+          "type": "number"
+        },
+        "losses": {
+          "$ref": "#/$defs/LossScalars"
+        },
+        "device": {
+          "$ref": "#/$defs/DeviceDescriptor"
+        },
+        "precision": {
+          "$ref": "#/$defs/Precision"
+        },
+        "batch_size": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "project_id",
+        "run_id",
+        "step",
+        "epoch",
+        "elapsed_ms",
+        "lr",
+        "losses",
+        "device",
+        "precision",
+        "batch_size"
+      ],
+      "additionalProperties": false
+    },
+    "ExportResult": {
+      "type": "object",
+      "properties": {
+        "output_path": {
+          "type": "string"
+        },
+        "video_frames": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "elapsed_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "device": {
+          "$ref": "#/$defs/DeviceDescriptor"
+        }
+      },
+      "required": [
+        "output_path",
+        "video_frames",
+        "elapsed_ms",
+        "device"
+      ],
+      "additionalProperties": false
+    },
+    "ArtifactResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "model"
+            },
+            "artifact": {
+              "$ref": "#/$defs/ModelRef"
+            }
+          },
+          "required": [
+            "kind",
+            "artifact"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "video"
+            },
+            "artifact": {
+              "$ref": "#/$defs/ExportResult"
+            }
+          },
+          "required": [
+            "kind",
+            "artifact"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "EventPayload": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "ready"
+            },
+            "capabilities": {
+              "$ref": "#/$defs/WorkerCapabilities"
+            },
+            "devices": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/DeviceDescriptor"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "capabilities",
+            "devices"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "started"
+            },
+            "job": {
+              "$ref": "#/$defs/JobKind"
+            }
+          },
+          "required": [
+            "type",
+            "job"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "progress"
+            },
+            "stage": {
+              "type": "string"
+            },
+            "completed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "total": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "stage",
+            "completed",
+            "total"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "metrics"
+            },
+            "project_id": {
+              "$ref": "#/$defs/ProjectId"
+            },
+            "run_id": {
+              "$ref": "#/$defs/TrainingRunId"
+            },
+            "step": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "epoch": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "elapsed_ms": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "lr": {
+              "type": "number"
+            },
+            "losses": {
+              "$ref": "#/$defs/LossScalars"
+            },
+            "device": {
+              "$ref": "#/$defs/DeviceDescriptor"
+            },
+            "precision": {
+              "$ref": "#/$defs/Precision"
+            },
+            "batch_size": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "type",
+            "project_id",
+            "run_id",
+            "step",
+            "epoch",
+            "elapsed_ms",
+            "lr",
+            "losses",
+            "device",
+            "precision",
+            "batch_size"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "checkpoint_committed"
+            },
+            "model_ref": {
+              "$ref": "#/$defs/ModelRef"
+            }
+          },
+          "required": [
+            "type",
+            "model_ref"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "completed"
+            },
+            "result": {
+              "$ref": "#/$defs/ArtifactResult"
+            }
+          },
+          "required": [
+            "type",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "cancelled"
+            },
+            "checkpoint": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ModelRef"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "checkpoint"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "failed"
+            },
+            "error": {
+              "$ref": "#/$defs/AppError"
+            }
+          },
+          "required": [
+            "type",
+            "error"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "WorkerEvent": {
+      "type": "object",
+      "properties": {
+        "protocol_version": {
+          "const": 1
+        },
+        "task_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "payload": {
+          "$ref": "#/$defs/EventPayload"
+        }
+      },
+      "required": [
+        "protocol_version",
+        "task_id",
+        "seq",
+        "payload"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "payload": {
+                "properties": {
+                  "type": {
+                    "const": "ready"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "task_id": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "task_id": {
+                "$ref": "#/$defs/TaskId"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "TaskStatus": {
+      "type": "string",
+      "enum": [
+        "queued",
+        "running",
+        "completed",
+        "cancelled",
+        "failed"
+      ]
+    },
+    "TaskSnapshot": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "job": {
+          "$ref": "#/$defs/JobKind"
+        },
+        "status": {
+          "$ref": "#/$defs/TaskStatus"
+        },
+        "last_seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "latest_event": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkerEvent"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactResult"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AppError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "task_id",
+        "project_id",
+        "job",
+        "status",
+        "last_seq",
+        "latest_event",
+        "result",
+        "error"
+      ],
+      "additionalProperties": false
+    },
+    "MetricsPageRequest": {
+      "type": "object",
+      "properties": {
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "run_id": {
+          "$ref": "#/$defs/TrainingRunId"
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "project_id",
+        "run_id",
+        "offset",
+        "limit"
+      ],
+      "additionalProperties": false
+    },
+    "MetricsPage": {
+      "type": "object",
+      "properties": {
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "run_id": {
+          "$ref": "#/$defs/TrainingRunId"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TrainingMetrics"
+          }
+        },
+        "next_offset": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "project_id",
+        "run_id",
+        "items",
+        "next_offset"
+      ],
+      "additionalProperties": false
+    },
+    "NewProject": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "directory": {
+          "type": "string"
+        },
+        "source_video": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "directory",
+        "source_video"
+      ],
+      "additionalProperties": false
+    },
+    "SourceVideo": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes"
+      ],
+      "additionalProperties": false
+    },
+    "PreprocessingIdentity": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string"
+        },
+        "source_sha256": {
+          "type": "string"
+        },
+        "config_sha256": {
+          "type": "string"
+        },
+        "cache_directory": {
+          "type": "string"
+        },
+        "component_identities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ModelIdentity"
+          }
+        }
+      },
+      "required": [
+        "version",
+        "source_sha256",
+        "config_sha256",
+        "cache_directory",
+        "component_identities"
+      ],
+      "additionalProperties": false
+    },
+    "CheckpointEntry": {
+      "type": "object",
+      "properties": {
+        "model_ref": {
+          "$ref": "#/$defs/ModelRef"
+        },
+        "relative_path": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "epoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "step": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "config": {
+          "$ref": "#/$defs/TrainConfig"
+        },
+        "identity": {
+          "$ref": "#/$defs/ModelIdentity"
+        }
+      },
+      "required": [
+        "model_ref",
+        "relative_path",
+        "sha256",
+        "size_bytes",
+        "epoch",
+        "step",
+        "config",
+        "identity"
+      ],
+      "additionalProperties": false
+    },
+    "ProjectManifest": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "name": {
+          "type": "string"
+        },
+        "source_video": {
+          "$ref": "#/$defs/SourceVideo"
+        },
+        "preprocessing": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PreprocessingIdentity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "model_identity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelIdentity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "checkpoints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CheckpointEntry"
+          }
+        },
+        "metrics_path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "id",
+        "name",
+        "source_video",
+        "preprocessing",
+        "model_identity",
+        "checkpoints",
+        "metrics_path"
+      ],
+      "additionalProperties": false
+    },
+    "ProjectSummary": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "name": {
+          "type": "string"
+        },
+        "directory": {
+          "type": "string"
+        },
+        "source_video": {
+          "type": "string"
+        },
+        "latest_model": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "directory",
+        "source_video",
+        "latest_model"
+      ],
+      "additionalProperties": false
+    },
+    "AssetManifest": {
+      "type": "object",
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/ModelIdentity"
+        },
+        "relative_files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sizes": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "hashes": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "urls": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "min_engine_version": {
+          "type": "string"
+        },
+        "provenance": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "identity",
+        "relative_files",
+        "sizes",
+        "hashes",
+        "urls",
+        "min_engine_version",
+        "provenance"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "examples": [
+    {
+      "type": "hello",
+      "protocol_version": 1
+    },
+    {
+      "protocol_version": 1,
+      "task_id": null,
+      "seq": 0,
+      "payload": {
+        "type": "ready",
+        "capabilities": {
+          "engine_version": "0.1.0",
+          "components": [
+            {
+              "name": "feathertalk",
+              "version": "1",
+              "available": true
+            }
+          ],
+          "training": true,
+          "generation": true
+        },
+        "devices": [
+          {
+            "id": "cpu:0",
+            "name": "CPU",
+            "vendor": null,
+            "driver": null,
+            "backend": "cpu",
+            "memory_bytes": null
+          }
+        ]
+      }
+    },
+    {
+      "protocol_version": 1,
+      "task_id": "a6ab9f87-f2f0-4b31-803e-90f0fad362cb",
+      "seq": 1,
+      "payload": {
+        "type": "metrics",
+        "project_id": "b6ab9f87-f2f0-4b31-803e-90f0fad362cb",
+        "run_id": "c6ab9f87-f2f0-4b31-803e-90f0fad362cb",
+        "step": 42,
+        "epoch": 5,
+        "elapsed_ms": 300,
+        "lr": 0.001,
+        "losses": {
+          "full": 1,
+          "mouth": 2,
+          "temporal": 3,
+          "temporal_mouth": 4,
+          "perceptual": 5,
+          "mouth_gradient": 6,
+          "total": 21
+        },
+        "device": {
+          "id": "cpu:0",
+          "name": "CPU",
+          "vendor": null,
+          "driver": null,
+          "backend": "cpu",
+          "memory_bytes": null
+        },
+        "precision": "f32",
+        "batch_size": 8
+      }
+    }
+  ]
+}
