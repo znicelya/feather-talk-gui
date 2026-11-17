@@ -68,12 +68,19 @@ pub struct WorkerCapabilities {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LossScalars {
+    #[serde(serialize_with = "serialize_finite_metric")]
     pub full: f64,
+    #[serde(serialize_with = "serialize_finite_metric")]
     pub mouth: f64,
+    #[serde(serialize_with = "serialize_finite_metric")]
     pub temporal: f64,
+    #[serde(serialize_with = "serialize_finite_metric")]
     pub temporal_mouth: f64,
+    #[serde(serialize_with = "serialize_finite_metric")]
     pub perceptual: f64,
+    #[serde(serialize_with = "serialize_finite_metric")]
     pub mouth_gradient: f64,
+    #[serde(serialize_with = "serialize_finite_metric")]
     pub total: f64,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -84,6 +91,7 @@ pub struct TrainingMetrics {
     pub step: u64,
     pub epoch: u32,
     pub elapsed_ms: u64,
+    #[serde(serialize_with = "serialize_finite_metric")]
     pub lr: f64,
     pub losses: LossScalars,
     pub device: DeviceDescriptor,
@@ -192,7 +200,51 @@ impl WorkerEvent {
                 "Ready must have no task ID; task events require one",
             ));
         }
+        if let EventPayload::Metrics(metrics) = &self.payload {
+            metrics.validate()?;
+        }
         Ok(())
+    }
+}
+// serde_json otherwise silently serializes NaN and infinities as null.
+// Apply this guard to the scalars themselves so pages and bare payloads are safe too.
+fn serialize_finite_metric<S: serde::Serializer>(
+    value: &f64,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    validate_finite_metric("metric scalar", *value).map_err(serde::ser::Error::custom)?;
+    serializer.serialize_f64(*value)
+}
+fn validate_finite_metric(field: &str, value: f64) -> Result<()> {
+    if !value.is_finite() {
+        return Err(AppError::new(
+            ErrorCode::Protocol,
+            "metrics",
+            format!("{field} must be finite"),
+        ));
+    }
+    Ok(())
+}
+impl LossScalars {
+    pub fn validate(&self) -> Result<()> {
+        for (field, value) in [
+            ("full", self.full),
+            ("mouth", self.mouth),
+            ("temporal", self.temporal),
+            ("temporal_mouth", self.temporal_mouth),
+            ("perceptual", self.perceptual),
+            ("mouth_gradient", self.mouth_gradient),
+            ("total", self.total),
+        ] {
+            validate_finite_metric(field, value)?;
+        }
+        Ok(())
+    }
+}
+impl TrainingMetrics {
+    pub fn validate(&self) -> Result<()> {
+        validate_finite_metric("lr", self.lr)?;
+        self.losses.validate()
     }
 }
 /// Observer implementations attach the task ID and monotonically increasing sequence.

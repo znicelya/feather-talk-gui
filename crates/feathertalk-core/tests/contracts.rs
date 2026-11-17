@@ -373,3 +373,69 @@ fn invalid_event_cannot_be_serialized() {
     event.protocol_version = 2;
     assert!(serde_json::to_string(&event).is_err());
 }
+
+#[test]
+fn nonfinite_metric_fields_are_rejected_at_every_wire_boundary() {
+    for field in [
+        "lr",
+        "full",
+        "mouth",
+        "temporal",
+        "temporal_mouth",
+        "perceptual",
+        "mouth_gradient",
+        "total",
+    ] {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut sample = metrics();
+            match field {
+                "lr" => sample.lr = value,
+                "full" => sample.losses.full = value,
+                "mouth" => sample.losses.mouth = value,
+                "temporal" => sample.losses.temporal = value,
+                "temporal_mouth" => sample.losses.temporal_mouth = value,
+                "perceptual" => sample.losses.perceptual = value,
+                "mouth_gradient" => sample.losses.mouth_gradient = value,
+                "total" => sample.losses.total = value,
+                _ => unreachable!(),
+            }
+            let error = WorkerEvent::new(
+                Some(TaskId::new()),
+                1,
+                EventPayload::Metrics(sample.clone()),
+            )
+            .expect_err(&format!("accepted {field}={value}"));
+            assert_eq!(error.code, ErrorCode::Protocol);
+            assert_eq!(error.stage, "metrics");
+            assert!(error.message.contains(field), "{error}");
+            assert!(error.message.contains("finite"), "{error}");
+            let event = WorkerEvent {
+                protocol_version: PROTOCOL_VERSION,
+                task_id: Some(TaskId::new()),
+                seq: 1,
+                payload: EventPayload::Metrics(sample.clone()),
+            };
+            assert!(event.validate().is_err());
+            assert!(serde_json::to_string(&event).is_err(), "event {field}");
+            assert!(
+                serde_json::to_string(&EventPayload::Metrics(sample.clone())).is_err(),
+                "payload {field}"
+            );
+            let error = serde_json::to_string(&sample).expect_err(field);
+            assert!(error.to_string().contains("metrics"));
+            if field != "lr" {
+                assert!(
+                    serde_json::to_string(&sample.losses).is_err(),
+                    "loss {field}"
+                );
+            }
+            let page = MetricsPage {
+                project_id: sample.project_id,
+                run_id: sample.run_id,
+                items: vec![sample],
+                next_offset: None,
+            };
+            assert!(serde_json::to_string(&page).is_err(), "page {field}");
+        }
+    }
+}
