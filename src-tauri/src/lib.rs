@@ -1,4 +1,6 @@
 pub mod resources;
+pub mod worker_host;
+mod worker_process;
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)

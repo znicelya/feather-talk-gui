@@ -568,22 +568,7 @@ pub fn prepare_project(
     }
     let cache = owned_directory(&root, Path::new("cache/prepared"))?;
     let lock = cache.join("prepare.lock");
-    let _file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&lock)
-        .map_err(|_| {
-            AppError::new(
-                ErrorCode::Busy,
-                "prepare",
-                "Project preparation is already running (or a stale prepare.lock must be removed)",
-            )
-        })?;
-    drop(_file);
-    let _lock = Cleanup {
-        path: lock,
-        directory: false,
-    };
+    let _lock_file = acquire_prepare_lock(&lock)?;
     progress(observer, "verify-components", 0, Some(4))?;
     let mut components = vec![];
     let mut manifests = vec![];
@@ -1096,5 +1081,78 @@ mod task10_finalization_regression {
         let result = super::sync_staged_file(&path);
         std::fs::remove_file(path).unwrap();
         result.unwrap();
+    }
+}
+
+fn acquire_prepare_lock(path: &Path) -> Result<fs::File> {
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .map_err(invalid)?;
+    fs2::FileExt::try_lock_exclusive(&file).map_err(|e| {
+        AppError::new(
+            ErrorCode::Busy,
+            "prepare",
+            format!("Preparation lock unavailable: {e}"),
+        )
+    })?;
+    Ok(file)
+}
+#[cfg(test)]
+mod task12_lock_tests {
+    use super::*;
+    #[test]
+    fn crash_releases_process_lock() {
+        let path = std::env::temp_dir().join(format!("prepare-{}.lock", ProjectId::new()));
+        let ready = path.with_extension("ready");
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "data::prepared::task12_lock_tests::lock_child",
+                "--nocapture",
+            ])
+            .env("FT_LOCK_CHILD", &path)
+            .spawn()
+            .unwrap();
+        let start = std::time::Instant::now();
+        while !ready.exists() {
+            assert!(start.elapsed().as_secs() < 15);
+            assert!(child.try_wait().unwrap().is_none());
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(
+            acquire_prepare_lock(&path).unwrap_err().code,
+            ErrorCode::Busy
+        );
+        child.kill().unwrap();
+        child.wait().unwrap();
+        drop(acquire_prepare_lock(&path).unwrap());
+        fs::remove_file(path).unwrap();
+        fs::remove_file(ready).unwrap();
+    }
+    #[test]
+    fn lock_child() {
+        if let Some(path) = std::env::var_os("FT_LOCK_CHILD") {
+            let path = PathBuf::from(path);
+            let _held = acquire_prepare_lock(&path).unwrap();
+            fs::write(path.with_extension("ready"), b"ready").unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(30));
+        }
+    }
+    #[test]
+    fn stale_file_is_not_ownership() {
+        let path = std::env::temp_dir().join(format!("prepare-{}.lock", ProjectId::new()));
+        fs::write(&path, b"legacy sentinel").unwrap();
+        let held = acquire_prepare_lock(&path).expect("Unlocked legacy sentinel must be reusable");
+        assert_eq!(
+            acquire_prepare_lock(&path).unwrap_err().code,
+            ErrorCode::Busy
+        );
+        drop(held);
+        drop(acquire_prepare_lock(&path).unwrap());
+        fs::remove_file(path).unwrap();
     }
 }

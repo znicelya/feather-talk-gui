@@ -9,3 +9,6 @@ pub use config::*;
 pub use error::*;
 pub use project::*;
 pub use protocol::*;
+
+pub mod worker;
+pub use worker::*;

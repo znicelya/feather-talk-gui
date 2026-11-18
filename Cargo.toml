@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/feathertalk-core", "crates/feathertalk-engine", "src-tauri", "tools/modelgen"]
+members = ["crates/feathertalk-worker", "crates/feathertalk-core", "crates/feathertalk-engine", "src-tauri", "tools/modelgen"]
 resolver = "3"
 
 [profile.release]

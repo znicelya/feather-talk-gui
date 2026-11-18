@@ -183,7 +183,12 @@ fn real_models_attach_frame_time_and_preserve_old_cache_on_no_face() {
         std::fs::read(root.join("cache/prepared/index.json")).unwrap(),
         b"previous committed index"
     );
-    assert!(!root.join("cache/prepared/prepare.lock").exists());
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(root.join("cache/prepared/prepare.lock"))
+        .unwrap();
+    fs2::FileExt::try_lock_exclusive(&lock).unwrap();
     assert!(
         std::fs::read_dir(root.join("cache/prepared"))
             .unwrap()

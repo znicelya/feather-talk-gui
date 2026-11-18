@@ -20,3 +20,5 @@ sha2 = "0.10"
 semver = "1"
 burn-store = { version = "=0.22.1", default-features = false, features = ["std"] }
 burn-pack = { version = "=0.22.1", default-features = false, features = ["std"] }
+
+fs2 = "0.4"

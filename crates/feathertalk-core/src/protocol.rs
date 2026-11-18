@@ -59,6 +59,14 @@ pub enum WorkerRequest {
     Cancel { task_id: TaskId },
     Shutdown,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequestKind {
+    Hello,
+    Start,
+    Cancel,
+    Shutdown,
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ComponentCapability {
@@ -129,6 +137,11 @@ pub enum ArtifactResult {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EventPayload {
+    RequestRejected {
+        request: RequestKind,
+        requested_task_id: Option<TaskId>,
+        error: AppError,
+    },
     Ready {
         capabilities: WorkerCapabilities,
         devices: Vec<DeviceDescriptor>,
@@ -202,12 +215,30 @@ impl WorkerEvent {
                 "Unsupported protocol version",
             ));
         }
-        if matches!(&self.payload, EventPayload::Ready { .. }) != self.task_id.is_none() {
+        if matches!(
+            &self.payload,
+            EventPayload::Ready { .. } | EventPayload::RequestRejected { .. }
+        ) != self.task_id.is_none()
+        {
             return Err(AppError::new(
                 ErrorCode::Protocol,
                 "worker_event",
-                "Ready must have no task ID; task events require one",
+                "Control responses must have no task ID; task events require one",
             ));
+        }
+        if let EventPayload::RequestRejected {
+            request,
+            requested_task_id,
+            ..
+        } = &self.payload
+        {
+            if matches!(request, RequestKind::Start | RequestKind::Cancel)
+                != requested_task_id.is_some()
+            {
+                return Err(crate::worker::protocol_error(
+                    "Rejected request ID does not match its kind",
+                ));
+            }
         }
         if let EventPayload::Metrics(metrics) = &self.payload {
             metrics.validate()?;
