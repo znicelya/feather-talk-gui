@@ -134,11 +134,11 @@ Rust 中标注为 `Result<T>` 的自有接口均使用 core 的 `type Result<T> 
 
 **Interfaces:** `VggFeatures::load(assets: &Path, device: &Device) -> Result<Self>`、`forward(&self, images: Tensor<4>) -> Tensor<4>`；`compute_loss(prediction: Tensor<5>, target: Tensor<5>, mouth_mask: Tensor<5>, vgg: &VggFeatures, config: &LossConfig) -> LossOutput`；pair 轴长度 2，`LossOutput { total: Tensor<1>, parts: LossParts }`，parts 六个命名分项为 `Tensor<1>`，名称与 core 的 LossScalars 相同。仅指标采样时调用 `LossParts::to_scalars() -> LossScalars`，避免逐步同步所有标量。
 
-- [ ] **Step 1:** 写 `all_loss_terms_match_reference`、`vgg_frozen_but_input_gradient_flows`、`zero_mask_is_finite`、`temporal_weights_zero_disable_temporal_path`；固定系数逐项比较值与梯度，断言 VGG 参数不更新而生成输入梯度非零；梯度差分/掩码交集、时序掩码并集和 avg_pool 边界与原版相同。关键断言：`assert!(prediction_gradient.iter().any(|g| g.abs() > 0.0)); assert_eq!(vgg_weights_before, vgg_weights_after);`。
-- [ ] **Step 2:** `cargo test -p feathertalk-engine --features flex --test loss_parity`，预期未实现损失或梯度丢失 FAIL。
-- [ ] **Step 3:** 实现 VGG features[0..14]、全图/嘴部 L1、低通时序/嘴部时序、VGG MSE、嘴部横纵梯度项；保留 BGR/0..1/无额外 ImageNet 归一化约定。仅 target 分支停止梯度；感知分支冻结权重不能阻断 prediction 梯度。
-- [ ] **Step 4:** 重跑 CPU/GPU 验证，预期所有分项与代表性梯度通过固定容差；一次完整人物更新后仅人物模型变化。
-- [ ] **Step 5:** 提交 `feat: reproduce FeatherTalk training losses and gradients`。
+- [x] **Step 1:** 写 `all_loss_terms_match_reference`、`vgg_frozen_but_input_gradient_flows`、`zero_mask_is_finite`、`temporal_weights_zero_disable_temporal_path`；固定系数逐项比较值与梯度，断言 VGG 参数不更新而生成输入梯度非零；梯度差分/掩码交集、时序掩码并集和 avg_pool 边界与原版相同。关键断言：`assert!(prediction_gradient.iter().any(|g| g.abs() > 0.0)); assert_eq!(vgg_weights_before, vgg_weights_after);`。
+- [x] **Step 2:** `cargo test -p feathertalk-engine --features flex --test loss_parity`，预期未实现损失或梯度丢失 FAIL。
+- [x] **Step 3:** 实现 VGG features[0..14]、全图/嘴部 L1、低通时序/嘴部时序、VGG MSE、嘴部横纵梯度项；保留 BGR/0..1/无额外 ImageNet 归一化约定。仅 target 分支停止梯度；感知分支冻结权重不能阻断 prediction 梯度。
+- [x] **Step 4:** 重跑 CPU/GPU 验证，预期所有分项与代表性梯度通过固定容差；一次完整人物更新后仅人物模型变化。
+- [x] **Step 5:** 提交 `feat: reproduce FeatherTalk training losses and gradients`。
 
 ## Task 8: 单视频规范化、几何和可恢复数据集
 
