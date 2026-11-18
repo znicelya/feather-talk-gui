@@ -16,3 +16,5 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 safetensors = "0.5.3"
 sha2 = "0.10"
+semver = "1"
+burn-store = { version = "=0.22.1", default-features = false, features = ["std"] }

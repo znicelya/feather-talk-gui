@@ -44,18 +44,25 @@ def convert_current_assets(source_dir: Path, supplied_models: Path, output_dir: 
         if name == 'scrfd_2_5g':
             # Retain executable source graph as architecture evidence and ORT oracle.
             shutil.copyfile(graph_path, directory / 'architecture.onnx')
-        paths = sorted(p.relative_to(directory).as_posix() for p in directory.iterdir() if p.is_file() and p.name != 'manifest.json')
+        paths = ['config.json','model.safetensors'] + (['architecture.onnx'] if name == 'scrfd_2_5g' else [])
         write_json(directory / 'manifest.json', {'identity': {'kind': name, 'architecture_version': name + '-source-v1',
             'source_sha256': audit[name]['source_sha256'], 'weights_sha256': sha256(directory / 'model.safetensors')},
             'relative_files': paths, 'sizes': {p: (directory/p).stat().st_size for p in paths},
             'hashes': {p: sha256(directory/p) for p in paths}, 'urls': {}, 'min_engine_version': '0.1.0',
             'provenance': audit[name].get('provenance', 'Rebuilt from original source; exact strict state loading')})
-    paths = sorted(p.relative_to(output_dir).as_posix() for p in output_dir.rglob('*') if p.is_file() and p != output_dir / 'manifest.json')
+    paths = sorted(name + '/' + filename for name in states for filename in [*__import__('json').loads((output_dir/name/'manifest.json').read_text())['relative_files'], 'manifest.json'])
+    paths.append('audit.json')
+    paths.sort()
     manifest = {'identity': {'kind': 'feathertalk-public-assets', 'architecture_version': 'source-v1', 'source_sha256': CURRENT_HUBERT,
         'weights_sha256': hashlib.sha256(json.dumps({name: sha256(output_dir/name/'model.safetensors') for name in sorted(states)},sort_keys=True).encode()).hexdigest()}, 'relative_files': paths,
         'sizes': {p: (output_dir/p).stat().st_size for p in paths}, 'hashes': {p: sha256(output_dir/p) for p in paths},
         'urls': {}, 'min_engine_version': '0.1.0', 'provenance': 'See component manifests and audit.json; original checkpoint provenance verified including official VGG subset comparison'}
     write_json(output_dir / 'manifest.json', manifest)
+    if (output_dir/'scrfd_2_5g/model.bpk').exists():
+        import sys
+        sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'modelgen'))
+        from finalize_assets import finalize
+        finalize(output_dir/'scrfd_2_5g')
     return output_dir / 'manifest.json'
 
 if __name__ == '__main__':

@@ -192,7 +192,7 @@ def generate_reference(source_dir: Path, assets: Path, output_dir: Path) -> Path
             {'roi':'clamp to image; retain at least one pixel; min ROI width/height apply'},'exact')
     from detect_face import SCRFD
     detector = SCRFD(str(assets/'scrfd_2_5g/architecture.onnx'),confThreshold=0.1,nmsThreshold=0.5)
-    for case, height, width in [('portrait',101,57),('landscape',57,101)]:
+    for case, height, width in [('portrait',101,57),('landscape',57,101),('integer_shrink',1280,1280),('rational_shrink',997,1373)]:
         bgr = (np.arange(height*width*3)%256).astype(np.uint8).reshape(height,width,3)
         resized,newh,neww,padh,padw = detector.resize_image(bgr)
         blob = cv2.dnn.blobFromImage(resized,1.0/128,(640,640),(127.5,127.5,127.5),swapRB=True)
@@ -220,6 +220,9 @@ def generate_reference(source_dir: Path, assets: Path, output_dir: Path) -> Path
     for case, speech in [('silence',np.zeros(720,dtype=np.float32)),('stereo',np.stack([np.sin(np.arange(720,dtype=np.float32)*0.017),np.ones(720,dtype=np.float32)],axis=1))]:
         hidden = hubert_module.get_feather_hubert_from_16k_speech(speech,hubert,device=torch.device('cpu'))
         save('audio_extract_'+case,{'speech':speech,'hidden':hidden},{'normalize':True,'epsilon':1e-7,'stereo_channel':'first'},'network')
+    from face_coordinates import coordinate_cases
+    for name, values, configuration in coordinate_cases(source_dir):
+        save(name, values, configuration, 'exact')
     versions = {name:importlib.metadata.version(name) for name in ['torch','torchvision','numpy','safetensors','onnx','onnxruntime','opencv-python-headless','pytest']}
     source_paths = ['model.py','train.py','face_utils.py','dataset_mouth_roi.py','data_utils/base_module.py','data_utils/pfld_mobileone.py','data_utils/feather_hubert/feather_hubert.py']
     manifest = {'schema_version':1,'seed':SEED,'device':'cpu','dtype':'float32','threads':1,'python':platform.python_version(),'versions':versions,

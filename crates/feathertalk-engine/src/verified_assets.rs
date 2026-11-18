@@ -21,9 +21,7 @@ impl VerifiedAssets {
         let manifest: AssetManifest =
             serde_json::from_slice(&std::fs::read(root.join("manifest.json")).map_err(error)?)
                 .map_err(error)?;
-        if manifest.min_engine_version != env!("CARGO_PKG_VERSION") {
-            return Err(error("Unsupported minimum engine version"));
-        }
+        check_minimum_version(&manifest.min_engine_version)?;
         let mut files = BTreeMap::new();
         for path in &manifest.relative_files {
             if path
@@ -49,11 +47,42 @@ impl VerifiedAssets {
                 return Err(error("Duplicate asset path"));
             }
         }
-        if manifest.hashes.get(Path::new("model.safetensors"))
+        if manifest
+            .hashes
+            .get(Path::new(if manifest.identity.kind == "scrfd_2_5g" {
+                "model.bpk"
+            } else {
+                "model.safetensors"
+            }))
             != Some(&manifest.identity.weights_sha256)
         {
             return Err(error("Weights identity mismatch"));
         }
         Ok(Self { manifest, files })
+    }
+}
+
+fn check_minimum_version(minimum: &str) -> Result<()> {
+    let minimum = semver::Version::parse(minimum)
+        .map_err(|e| error(format!("Malformed minimum engine version: {e}")))?;
+    let current = semver::Version::parse(env!("CARGO_PKG_VERSION")).map_err(error)?;
+    if current < minimum {
+        return Err(error(format!(
+            "Engine {current} is older than required {minimum}"
+        )));
+    }
+    Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn minimum_versions_are_ordered_and_validated() {
+        for version in ["0.0.1", "0.1.0", "0.1.0-alpha.1"] {
+            assert!(check_minimum_version(version).is_ok(), "{version}");
+        }
+        for version in ["0.1.1", "1.0.0", "garbage", "0.1", "", ">=0.1.0"] {
+            assert!(check_minimum_version(version).is_err(), "{version}");
+        }
     }
 }

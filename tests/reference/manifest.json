@@ -1,5 +1,5 @@
 {
-  "assets_manifest_sha256": "6080242984162fc6e0cacc1a8771f4524aa5c9702860fbd53a07252b8f017bef",
+  "assets_manifest_sha256": "718f6c16943de78dbc549e56cefe30a2c21a235def89a6288c860fd7168e99ef",
   "cases": {
     "audio_clip_first": {
       "configuration": {
@@ -5254,6 +5254,54 @@
         "rtol": 0.0
       }
     },
+    "detector_preprocess_integer_shrink": {
+      "configuration": {
+        "keep_ratio": true,
+        "mean": 127.5,
+        "resize": "INTER_AREA",
+        "scale": 0.0078125,
+        "swap_rb": true
+      },
+      "file": "detector_preprocess_integer_shrink.safetensors",
+      "sha256": "2201862213fa34b38f5655d212d0fa61bb1b35840b79bb05fce014629a64715b",
+      "tensors": {
+        "bgr": {
+          "dtype": "torch.uint8",
+          "shape": [
+            1280,
+            1280,
+            3
+          ]
+        },
+        "blob": {
+          "dtype": "torch.float32",
+          "shape": [
+            1,
+            3,
+            640,
+            640
+          ]
+        },
+        "geometry": {
+          "dtype": "torch.int64",
+          "shape": [
+            4
+          ]
+        },
+        "resized": {
+          "dtype": "torch.uint8",
+          "shape": [
+            640,
+            640,
+            3
+          ]
+        }
+      },
+      "tolerance": {
+        "atol": 0.0,
+        "rtol": 0.0
+      }
+    },
     "detector_preprocess_landscape": {
       "configuration": {
         "keep_ratio": true,
@@ -5318,6 +5366,54 @@
           "shape": [
             101,
             57,
+            3
+          ]
+        },
+        "blob": {
+          "dtype": "torch.float32",
+          "shape": [
+            1,
+            3,
+            640,
+            640
+          ]
+        },
+        "geometry": {
+          "dtype": "torch.int64",
+          "shape": [
+            4
+          ]
+        },
+        "resized": {
+          "dtype": "torch.uint8",
+          "shape": [
+            640,
+            640,
+            3
+          ]
+        }
+      },
+      "tolerance": {
+        "atol": 0.0,
+        "rtol": 0.0
+      }
+    },
+    "detector_preprocess_rational_shrink": {
+      "configuration": {
+        "keep_ratio": true,
+        "mean": 127.5,
+        "resize": "INTER_AREA",
+        "scale": 0.0078125,
+        "swap_rb": true
+      },
+      "file": "detector_preprocess_rational_shrink.safetensors",
+      "sha256": "68d75456e9c60f5698e60f737ebbf24dec1fe8dcb3cf40650fb1033b6b1cf9b9",
+      "tensors": {
+        "bgr": {
+          "dtype": "torch.uint8",
+          "shape": [
+            997,
+            1373,
             3
           ]
         },
@@ -5972,6 +6068,252 @@
       "tolerance": {
         "atol": 2e-06,
         "rtol": 2e-05
+      }
+    },
+    "landmark_coordinates_left_top": {
+      "configuration": {
+        "expansion": 1.05,
+        "first_face_only": true,
+        "local_cast_before_origin": true,
+        "mean_face_sha256": "40bed2653ae861e9a24b4766c3d085986b7c1245a27373913a9a5b1a6ce069ef",
+        "method": "original Landmark.detect and face_det with controlled detector and raw prediction; no RNG",
+        "source_sha256": "0944d806113e0b6e8b84df9612ea72086293bf6f484a9b4d16738046532d693c"
+      },
+      "file": "landmark_coordinates_left_top.safetensors",
+      "sha256": "c1f645d2a14d01d85484a93c974f27a8f7cd846c2bcf5ddc57610e017851b311",
+      "tensors": {
+        "boxes_xywh": {
+          "dtype": "torch.float32",
+          "shape": [
+            2,
+            4
+          ]
+        },
+        "crop": {
+          "dtype": "torch.uint8",
+          "shape": [
+            24,
+            24,
+            3
+          ]
+        },
+        "frame": {
+          "dtype": "torch.uint8",
+          "shape": [
+            37,
+            53,
+            3
+          ]
+        },
+        "local": {
+          "dtype": "torch.int32",
+          "shape": [
+            110,
+            2
+          ]
+        },
+        "mean_face": {
+          "dtype": "torch.float32",
+          "shape": [
+            220
+          ]
+        },
+        "origin": {
+          "dtype": "torch.int32",
+          "shape": [
+            2
+          ]
+        },
+        "pfld_input": {
+          "dtype": "torch.float32",
+          "shape": [
+            1,
+            3,
+            192,
+            192
+          ]
+        },
+        "points": {
+          "dtype": "torch.int32",
+          "shape": [
+            110,
+            2
+          ]
+        },
+        "raw": {
+          "dtype": "torch.float32",
+          "shape": [
+            220
+          ]
+        }
+      },
+      "tolerance": {
+        "atol": 0.0,
+        "rtol": 0.0
+      }
+    },
+    "landmark_coordinates_negative_center": {
+      "configuration": {
+        "expansion": 1.05,
+        "first_face_only": true,
+        "local_cast_before_origin": true,
+        "mean_face_sha256": "40bed2653ae861e9a24b4766c3d085986b7c1245a27373913a9a5b1a6ce069ef",
+        "method": "original Landmark.detect and face_det with controlled detector and raw prediction; no RNG",
+        "source_sha256": "0944d806113e0b6e8b84df9612ea72086293bf6f484a9b4d16738046532d693c"
+      },
+      "file": "landmark_coordinates_negative_center.safetensors",
+      "sha256": "202a175a4be89e77422184e508801a863b87d5ddc231d41df7a6b63b9339b54c",
+      "tensors": {
+        "boxes_xywh": {
+          "dtype": "torch.float32",
+          "shape": [
+            1,
+            4
+          ]
+        },
+        "crop": {
+          "dtype": "torch.uint8",
+          "shape": [
+            19,
+            19,
+            3
+          ]
+        },
+        "frame": {
+          "dtype": "torch.uint8",
+          "shape": [
+            37,
+            53,
+            3
+          ]
+        },
+        "local": {
+          "dtype": "torch.int32",
+          "shape": [
+            110,
+            2
+          ]
+        },
+        "mean_face": {
+          "dtype": "torch.float32",
+          "shape": [
+            220
+          ]
+        },
+        "origin": {
+          "dtype": "torch.int32",
+          "shape": [
+            2
+          ]
+        },
+        "pfld_input": {
+          "dtype": "torch.float32",
+          "shape": [
+            1,
+            3,
+            192,
+            192
+          ]
+        },
+        "points": {
+          "dtype": "torch.int32",
+          "shape": [
+            110,
+            2
+          ]
+        },
+        "raw": {
+          "dtype": "torch.float32",
+          "shape": [
+            220
+          ]
+        }
+      },
+      "tolerance": {
+        "atol": 0.0,
+        "rtol": 0.0
+      }
+    },
+    "landmark_coordinates_right_bottom": {
+      "configuration": {
+        "expansion": 1.05,
+        "first_face_only": true,
+        "local_cast_before_origin": true,
+        "mean_face_sha256": "40bed2653ae861e9a24b4766c3d085986b7c1245a27373913a9a5b1a6ce069ef",
+        "method": "original Landmark.detect and face_det with controlled detector and raw prediction; no RNG",
+        "source_sha256": "0944d806113e0b6e8b84df9612ea72086293bf6f484a9b4d16738046532d693c"
+      },
+      "file": "landmark_coordinates_right_bottom.safetensors",
+      "sha256": "3be6377ae638930f8f01c60ce4dd46436121175bb2767c32b16b67dbadb16a3b",
+      "tensors": {
+        "boxes_xywh": {
+          "dtype": "torch.float32",
+          "shape": [
+            1,
+            4
+          ]
+        },
+        "crop": {
+          "dtype": "torch.uint8",
+          "shape": [
+            23,
+            23,
+            3
+          ]
+        },
+        "frame": {
+          "dtype": "torch.uint8",
+          "shape": [
+            37,
+            53,
+            3
+          ]
+        },
+        "local": {
+          "dtype": "torch.int32",
+          "shape": [
+            110,
+            2
+          ]
+        },
+        "mean_face": {
+          "dtype": "torch.float32",
+          "shape": [
+            220
+          ]
+        },
+        "origin": {
+          "dtype": "torch.int32",
+          "shape": [
+            2
+          ]
+        },
+        "pfld_input": {
+          "dtype": "torch.float32",
+          "shape": [
+            1,
+            3,
+            192,
+            192
+          ]
+        },
+        "points": {
+          "dtype": "torch.int32",
+          "shape": [
+            110,
+            2
+          ]
+        },
+        "raw": {
+          "dtype": "torch.float32",
+          "shape": [
+            220
+          ]
+        }
+      },
+      "tolerance": {
+        "atol": 0.0,
+        "rtol": 0.0
       }
     },
     "loss_disabled": {

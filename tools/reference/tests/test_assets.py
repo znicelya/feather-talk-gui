@@ -153,3 +153,21 @@ def test_hubert_source_calibration_and_mutations():
         assert (expected.abs() > limit).any(), f'zeroed {key} must fail'
         assert (expected.abs() * .01 > limit).any(), f'1% corruption of {key} must fail'
     assert entry['tolerance'] == {'atol':2e-5,'rtol':2e-4}
+
+
+def test_source_landmark_coordinates_and_border():
+    import numpy as np
+    import torch
+    from face_coordinates import coordinate_cases
+    from safetensors.torch import load_file
+    before = torch.get_rng_state().clone()
+    cases = list(coordinate_cases(SOURCE))
+    assert torch.equal(before, torch.get_rng_state())
+    for name, tensors, config in cases:
+        stored = load_file(Path(os.environ['FT_REFERENCE_DIR']) / (name + '.safetensors'))
+        for key, value in tensors.items():
+            assert np.array_equal(np.asarray(value), stored[key].numpy()), (name, key)
+        assert tensors['points'].shape == (110,2)
+        assert (tensors['crop'] == 0).all(axis=2).any()
+        assert np.array_equal(tensors['points'], tensors['local'] + tensors['origin'])
+        assert not np.array_equal(tensors['points'], ((tensors['raw']+tensors['mean_face']).reshape(110,2)*tensors['crop'].shape[0] + tensors['origin']).astype(np.int32))
