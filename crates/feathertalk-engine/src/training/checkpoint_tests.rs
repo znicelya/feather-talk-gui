@@ -13,7 +13,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-fn fixture() -> (PathBuf, crate::data::prepared::PreparedProject) {
+pub(super) fn fixture() -> (PathBuf, crate::data::prepared::PreparedProject) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
         "../../.artifacts/task9b-projects/{}",
         ProjectId::new()
@@ -78,7 +78,7 @@ fn fixture() -> (PathBuf, crate::data::prepared::PreparedProject) {
     .unwrap();
     (root, prepared)
 }
-fn device() -> crate::ExecutionDevice {
+pub(super) fn device() -> crate::ExecutionDevice {
     let backend = match std::env::var("FT_TEST_BACKEND").as_deref() {
         Ok("cuda") => BackendKind::Cuda,
         Ok("vulkan") => BackendKind::Vulkan,
