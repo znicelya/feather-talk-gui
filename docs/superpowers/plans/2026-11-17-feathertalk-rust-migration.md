@@ -122,11 +122,11 @@ Rust 中标注为 `Result<T>` 的自有接口均使用 core 的 `type Result<T> 
 
 **Interfaces:** `FeatherTalk::new(device: &Device) -> Self`；`forward(&self, image: Tensor<4>, audio: Tensor<3>) -> Tensor<4>`；`encode_image(&self, image: Tensor<4>) -> ImagePyramid`；`decode_features(&self, features: ImagePyramid, audio: Tensor<3>) -> Tensor<4>`；`ImagePyramid` 含 x1..x5 五个 rank-4 特征。测试用固定参数加载只用于开发验证，不向产品暴露旧人物导入。
 
-- [ ] **Step 1:** 写 `visual_parity` 的前向/关键层/代表性参数梯度比较；输入 `[B,6,144,144]` 与 `[B,40,1024]`，输出 `[B,3,144,144]`；覆盖奇数中间尺寸、相对位置偏置、residual gate、softmax 轴和上采样 padding；`forward` 与 encode/decode 分开执行应等价。关键断言：`assert_eq!(output.dims(), [1, 3, 144, 144]); assert!(parity.passed);`。
-- [ ] **Step 2:** `cargo test -p feathertalk-engine --features flex --test visual_parity`，预期网络缺失 FAIL。
-- [ ] **Step 3:** 逐模块迁移 inverted residual、AudioAdapter、局部上下文、三层空间音频注意力与 UNet；默认视觉通道 `(24,32,64,128,256)`、audio_dim=512、center index=10，初始化/归一化/训练与 eval 语义与参考一致。注意可训练位置参数和 gate 不得在转换时遗漏。
-- [ ] **Step 4:** 重跑 CPU 与已具备 GPU 的同一测试，预期固定参数前向和梯度通过；验证随机新模型参数可参与优化且保存/载入后前向不变。
-- [ ] **Step 5:** 提交 `feat: port FeatherTalk visual network to Burn`。
+- [x] **Step 1:** 写 `visual_parity` 的前向/关键层/代表性参数梯度比较；输入 `[B,6,144,144]` 与 `[B,40,1024]`，输出 `[B,3,144,144]`；覆盖奇数中间尺寸、相对位置偏置、residual gate、softmax 轴和上采样 padding；`forward` 与 encode/decode 分开执行应等价。关键断言：`assert_eq!(output.dims(), [1, 3, 144, 144]); assert!(parity.passed);`。
+- [x] **Step 2:** `cargo test -p feathertalk-engine --features flex --test visual_parity`，预期网络缺失 FAIL。
+- [x] **Step 3:** 逐模块迁移 inverted residual、AudioAdapter、局部上下文、三层空间音频注意力与 UNet；默认视觉通道 `(24,32,64,128,256)`、audio_dim=512、center index=10，初始化/归一化/训练与 eval 语义与参考一致。注意可训练位置参数和 gate 不得在转换时遗漏。
+- [x] **Step 4:** 重跑 CPU 与已具备 GPU 的同一测试，预期固定参数前向和梯度通过；验证随机新模型参数可参与优化且保存/载入后前向不变。
+- [x] **Step 5:** 提交 `feat: port FeatherTalk visual network to Burn`。
 
 ## Task 7: VGG 感知分支与全部训练损失
 
