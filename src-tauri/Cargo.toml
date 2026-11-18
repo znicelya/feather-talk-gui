@@ -22,3 +22,9 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+feathertalk-core = { path = "../crates/feathertalk-core" }
+sha2 = "0.10"
+semver = "1"
+tempfile = "3"
+fs2 = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }

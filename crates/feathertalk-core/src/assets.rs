@@ -21,3 +21,39 @@ pub struct AssetManifest {
     pub min_engine_version: String,
     pub provenance: String,
 }
+
+/// Resource targeting is explicit; backend is cpu, cuda, vulkan or metal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TargetPlatform {
+    pub os: String,
+    pub architecture: String,
+    pub backend: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourcePin {
+    pub id: String,
+    pub version: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceSelection {
+    pub target: TargetPlatform,
+    pub resources: Vec<ResourcePin>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceStatus {
+    pub resource: ResourcePin,
+    pub identity: Option<ModelIdentity>,
+    pub path: Option<PathBuf>,
+    pub ready: bool,
+    pub reason: Option<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceInventory {
+    pub ready: bool,
+    pub items: Vec<ResourceStatus>,
+}
