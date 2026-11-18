@@ -1,5 +1,6 @@
 pub mod data;
 pub mod device;
+pub mod inference;
 pub mod media;
 pub mod models;
 pub mod ops;

@@ -680,10 +680,7 @@ pub fn prepare_project(
         .cloned()
         .chain(std::iter::once(PathBuf::from("manifest.json")))
     {
-        fs::File::open(stage.join(path))
-            .map_err(invalid)?
-            .sync_all()
-            .map_err(invalid)?;
+        sync_staged_file(&stage.join(path))?;
     }
     check(cancel)?;
     if file_hash(&source)? != project.source_video.sha256 {
@@ -719,6 +716,16 @@ pub fn prepare_project(
     fs::rename(pending, index_path).map_err(invalid)?;
     progress(observer, "prepared", count, Some(count))?;
     Ok(result)
+}
+
+fn sync_staged_file(path: &Path) -> Result<()> {
+    // Windows FlushFileBuffers requires a handle opened for writing.
+    fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(invalid)?
+        .sync_all()
+        .map_err(invalid)
 }
 
 fn build_face_frames(
@@ -1074,5 +1081,20 @@ mod tests {
         unsafe_previous.generation.frames[0].file = "../escape.f32".into();
         assert_eq!(run(&root, Some(&unsafe_previous), &inputs).2, [0, 1, 0]);
         assert!(!root.join("escape.f32").exists());
+    }
+}
+
+#[cfg(test)]
+mod task10_finalization_regression {
+    #[test]
+    fn staged_file_can_be_flushed_on_windows() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+            "../../.artifacts/task10-logs/sync-{}",
+            feathertalk_core::ProjectId::new()
+        ));
+        std::fs::write(&path, b"complete artifact").unwrap();
+        let result = super::sync_staged_file(&path);
+        std::fs::remove_file(path).unwrap();
+        result.unwrap();
     }
 }
