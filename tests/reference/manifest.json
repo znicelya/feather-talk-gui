@@ -5364,6 +5364,36 @@
       },
       "file": "feather_hubert.safetensors",
       "sha256": "d4f33e49878f5d14051f94c5dc339fb7290425f0828c58ed71cf5780e390df6e",
+      "tensor_tolerances": {
+        "layer.encoder": {
+          "atol": 0.0005583125153947321,
+          "calibration": {
+            "factor": 4,
+            "max_abs_source_error": 0.00013957812884868304,
+            "method": "complete original PyTorch FeatherHuBERT FP32 versus FP64; identical frozen FP32 input/weights cast to FP64",
+            "original_atol": 2e-05,
+            "original_gate_violations": 3,
+            "rationale": "Source-only empirical reduction allowance for these intermediate taps; final outputs and extraction gates remain fixed. No Burn outputs used.",
+            "source_file_sha256": "f6403a08f33bd60a3883fcbcc3027c543cd55ec369ecf7fbfee67520bd6caad6",
+            "source_weights_sha256": "3b147e66502132bac3ff76b4730c2a83c341c75251d22a28182a5a1b689cfc46"
+          },
+          "rtol": 0.0002
+        },
+        "layer.frontend.layers.0": {
+          "atol": 0.0003885908008882666,
+          "calibration": {
+            "factor": 4,
+            "max_abs_source_error": 9.714770022206665e-05,
+            "method": "complete original PyTorch FeatherHuBERT FP32 versus FP64; identical frozen FP32 input/weights cast to FP64",
+            "original_atol": 2e-05,
+            "original_gate_violations": 1,
+            "rationale": "Source-only empirical reduction allowance for these intermediate taps; final outputs and extraction gates remain fixed. No Burn outputs used.",
+            "source_file_sha256": "f6403a08f33bd60a3883fcbcc3027c543cd55ec369ecf7fbfee67520bd6caad6",
+            "source_weights_sha256": "3b147e66502132bac3ff76b4730c2a83c341c75251d22a28182a5a1b689cfc46"
+          },
+          "rtol": 0.0002
+        }
+      },
       "tensors": {
         "input.0": {
           "dtype": "torch.float32",

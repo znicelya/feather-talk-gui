@@ -102,6 +102,9 @@ def generate_reference(source_dir: Path, assets: Path, output_dir: Path) -> Path
     hubert.load_state_dict(load_file(assets/'feather_hubert/model.safetensors'), strict=True)
     waveform = torch.sin(torch.arange(16000,dtype=torch.float32)*0.017)[None]
     network('feather_hubert', hubert, (waveform,), ['frontend.layers.0','frontend','encoder.0','encoder','final_norm','proj'])
+    from hubert_calibration import calibrate_hubert
+    entries['feather_hubert']['tensor_tolerances'] = calibrate_hubert(
+        hubert, waveform, load_file(output_dir / 'feather_hubert.safetensors'), tolerances['network'])
     pfld = PFLD_GhostOne()
     pfld.load_state_dict(load_file(assets/'pfld_ghost_one/model.safetensors'), strict=True)
     network('pfld_ghost_one', pfld, (torch.rand(1,3,192,192),), ['conv1','conv3_3','conv4_3','conv5_4','conv8','conv_out'])

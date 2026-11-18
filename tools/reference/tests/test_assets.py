@@ -122,3 +122,34 @@ def test_normalization_calibration_and_mutations():
     wrong = 0.9 + 0.1 * r['input.0'].var((0, 2, 3), unbiased=False)
     gate = manifest['cases']['batch_norm_train']['tolerance']
     assert ((wrong-r['state.running_var']).abs() > gate['atol']+gate['rtol']*r['state.running_var'].abs()).any()
+
+def test_hubert_source_calibration_and_mutations():
+    import json
+    import torch
+    from safetensors.torch import load_file
+    from audit import source_modules
+    from hubert_calibration import calibrate_hubert
+    torch.set_num_threads(1)
+    root = Path(os.environ['FT_REFERENCE_DIR'])
+    entry = json.loads((root / 'manifest.json').read_text())['cases']['feather_hubert']
+    r = load_file(root / entry['file'])
+    h = source_modules(SOURCE)
+    assets = Path(os.environ['FT_ASSETS_DIR']) / 'feather_hubert'
+    config = json.loads((assets / 'config.json').read_text())['configuration']
+    model = h.FeatherHuBERTEncoder(h.FeatherHuBERTConfig(**config)).eval()
+    model.load_state_dict(load_file(assets / 'model.safetensors'), strict=True)
+    captured = {}
+    for key in ['frontend.layers.0','frontend','encoder.0','encoder','final_norm','proj']:
+        model.get_submodule(key).register_forward_hook(lambda mod,i,o,key=key: captured.update({'layer.'+key:o.detach().clone()}))
+    with torch.no_grad(): captured['output'] = model(r['input.0'])
+    assert all(torch.equal(value, r[key]) for key,value in captured.items())
+    calibrated = calibrate_hubert(model, r['input.0'], r, entry['tolerance'])
+    assert set(calibrated) == {'layer.frontend.layers.0','layer.encoder'}
+    assert calibrated == entry['tensor_tolerances']
+    for key in [*calibrated,'output']:
+        gate = calibrated.get(key, entry['tolerance'])
+        expected = r[key]
+        limit = gate['atol'] + gate['rtol'] * expected.abs()
+        assert (expected.abs() > limit).any(), f'zeroed {key} must fail'
+        assert (expected.abs() * .01 > limit).any(), f'1% corruption of {key} must fail'
+    assert entry['tolerance'] == {'atol':2e-5,'rtol':2e-4}
