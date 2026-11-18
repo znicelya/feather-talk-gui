@@ -42,10 +42,12 @@
 **Consumes:** reviewed 9a, FeatherTalk Module and all447 records, ModuleOptimizer, PreparedProject/PairSampler/SamplerState.
 **Produces:** TrainingState (model/Adam/config/batch mode/target+actual/run/epoch/step/sampler/seed-policy/identity), constructor from scratch; save_checkpoint(&TrainingState,destination)->Result<ModelRef>; load_checkpoint(project_directory,model_ref,device)->Result<TrainingState>. Public helpers may expose complete validated snapshot bytes for isolated reconstruction; exact final API recorded for9c/9d. No trainer loop/probe executable.
 
-- [ ] Step1: Failing tests for complete roundtrip including newest BN/counter/ParamIds; missing moment/time/foreign ID and wrong data/project identity reject; interrupted staging leaves old checkpoint/reference usable.
-- [ ] Step2: Implement source-compatible fresh state + versioned deterministic application seed policy metadata, full Burnpack inventory prevalidation and atomic publication. ModelRef resolves project.json committedindex under explicitroot. Store no arbitrary checkpoint path in ModelRef.
-- [ ] Step3: Test real model state/moments roundtrip and focused small real optimizer state mutation, CPU+availableGPU state load/finite continuation when feasible; direct BN lifecycle transition Minor. State-only protocols may use small real modules but must not claim full objective trained.
-- [ ] Step4: Record exact covering evidence, self-review, scoped commit and fresh review before9c.
+- [x] Step1: Failing tests for complete roundtrip including newest BN/counter/ParamIds; missing moment/time/foreign ID and wrong data/project identity reject; interrupted staging leaves old checkpoint/reference usable.
+- [x] Step2: Implement source-compatible fresh state + versioned deterministic application seed policy metadata, full Burnpack inventory prevalidation and atomic publication. ModelRef resolves project.json committedindex under explicitroot. Store no arbitrary checkpoint path in ModelRef.
+- [x] Step3: Test real model state/moments roundtrip and focused small real optimizer state mutation, CPU+availableGPU state load/finite continuation when feasible; direct BN lifecycle transition Minor. State-only protocols may use small real modules but must not claim full objective trained.
+- [x] Step4: Record exact covering evidence, self-review, scoped commit and fresh review before9c.
+
+Execution note: initial RED covered the missing state/seed module; most full protocol tests were introduced alongside implementation. Passing behavior coverage and the learning-rate fix RED/GREEN are recorded in task-9b-report.md; this does not claim a complete preimplementation RED sequence.
 
 ## Stage 9c: Committed training step, sampled metrics and exact continuation
 
