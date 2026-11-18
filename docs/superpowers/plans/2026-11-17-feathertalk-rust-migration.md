@@ -86,11 +86,11 @@ Rust 中标注为 `Result<T>` 的自有接口均使用 core 的 `type Result<T> 
 
 **Interfaces:** `open_device(request: &DeviceRequest) -> Result<ExecutionDevice>`；`ExecutionDevice { device: Device, descriptor: DeviceDescriptor }`，使用 core 的 descriptor。`probe_devices() -> Result<Vec<DeviceDescriptor>>`；`resolve_device(policy: &DevicePolicy, descriptors: &[DeviceDescriptor]) -> Result<DeviceRequest>` 提供确定性的初始设备解析，后续由 Task 17 的已验证基准增强。`run_operator_checks(device: &ExecutionDevice, reference: &Path) -> Result<OperatorReport>`；`OperatorReport { device: DeviceDescriptor, checks: Vec<ParityCheck> }`，`ParityCheck { name, passed, max_abs_error, max_rel_error }`。自有 `resize_bilinear_align_corners(input: Tensor<4>, output_hw: [usize;2]) -> Tensor<4>` 必须可反向。
 
-- [ ] **Step 1:** 写 `operator_parity.rs` 的 `resize_forward_and_backward_match`、`normalization_train_eval_match`、`grouped_dilated_conv_gradients_match`、`avg_pool_padding_and_attention_match`。分别加载 Task 2 的期望值并断言逐项容差、有限/非零梯度、BN 运行统计与 train/eval 行为；设备报告必须匹配请求的实际执行设备。关键断言：`assert!(report.checks.iter().all(|check| check.passed)); assert_eq!(report.device.id, request.device_id);`。
-- [ ] **Step 2:** 用最小 engine 壳运行 `cargo test -p feathertalk-engine --features flex --test operator_parity`，预期缺失算子或未对齐时 FAIL。
-- [ ] **Step 3:** 使用候选 Burn 0.22.1 验证 API；按平台配置 flex/cpu/vulkan/cuda/metal feature。缺失能力实现可验证的 Burn/CubeCL 扩展；禁止删损失绕过。若候选版本不可用/关键功能不成立，记录证据、选可行版本、重生成匹配源码和参考存储，再锁定 Burn 相关精确版本。CPU 要明确执行在 host CPU，不以软件 GPU 适配器代替；分发基线能够在本机 i5-10400 执行，SIMD 按实际可用能力选择。
-- [ ] **Step 4:** 重跑 CPU 测试并运行 `cargo run --release -p feathertalk-engine --features vulkan --bin backend-check -- --backend vulkan --reference .artifacts/reference --output .artifacts/reports/operators-vulkan.json`；CUDA 使用 `--features cuda`/`--backend cuda`，Mac 使用 metal，CPU 使用 flex。当前可用设备先实测，其余能力表记录未运行；通过结果含设备、数值误差与梯度。
-- [ ] **Step 5:** 提交 `feat: validate Burn operators and execution backends`。本任务未通过的数学能力不能带入模型集成。
+- [x] **Step 1:** 写 `operator_parity.rs` 的 `resize_forward_and_backward_match`、`normalization_train_eval_match`、`grouped_dilated_conv_gradients_match`、`avg_pool_padding_and_attention_match`。分别加载 Task 2 的期望值并断言逐项容差、有限/非零梯度、BN 运行统计与 train/eval 行为；设备报告必须匹配请求的实际执行设备。关键断言：`assert!(report.checks.iter().all(|check| check.passed)); assert_eq!(report.device.id, request.device_id);`。
+- [x] **Step 2:** 用最小 engine 壳运行 `cargo test -p feathertalk-engine --features flex --test operator_parity`，预期缺失算子或未对齐时 FAIL。
+- [x] **Step 3:** 使用候选 Burn 0.22.1 验证 API；按平台配置 flex/cpu/vulkan/cuda/metal feature。缺失能力实现可验证的 Burn/CubeCL 扩展；禁止删损失绕过。若候选版本不可用/关键功能不成立，记录证据、选可行版本、重生成匹配源码和参考存储，再锁定 Burn 相关精确版本。CPU 要明确执行在 host CPU，不以软件 GPU 适配器代替；分发基线能够在本机 i5-10400 执行，SIMD 按实际可用能力选择。
+- [x] **Step 4:** 重跑 CPU 测试并运行 `cargo run --release -p feathertalk-engine --features vulkan --bin backend-check -- --backend vulkan --reference .artifacts/reference --output .artifacts/reports/operators-vulkan.json`；CUDA 使用 `--features cuda`/`--backend cuda`，Mac 使用 metal，CPU 使用 flex。当前可用设备先实测，其余能力表记录未运行；通过结果含设备、数值误差与梯度。
+- [x] **Step 5:** 提交 `feat: validate Burn operators and execution backends`。本任务未通过的数学能力不能带入模型集成。
 
 ## Task 4: 当前 FeatherHuBERT 前向与音频协议
 
