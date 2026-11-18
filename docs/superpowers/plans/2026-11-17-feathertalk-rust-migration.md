@@ -158,11 +158,13 @@ Rust 中标注为 `Result<T>` 的自有接口均使用 core 的 `type Result<T> 
 
 **Interfaces:** `train(request: &TrainRequest, prepared: &PreparedProject, assets: &Path, device: &ExecutionDevice, observer: &dyn TaskObserver, cancel: &Cancellation) -> Result<TrainingResult>`；`save_checkpoint(state: &TrainingState, destination: &Path) -> Result<ModelRef>`；`load_checkpoint(model_ref: &ModelRef, device: &ExecutionDevice) -> Result<TrainingState>`；`probe_batch_size(state: &mut TrainingState, prepared: &PreparedProject, vgg: &VggFeatures, device: &ExecutionDevice, candidates: &[usize]) -> Result<usize>`。`TrainingState` 包含人物参数/BN、Adam、配置、run_id、epoch/global_step、sampler_state、随机状态及所有数据/模型指纹；`TrainingResult` 含最新 ModelRef 与停止原因。从头训练分配新的 TrainingRunId，续训保留原 run_id，用于曲线与历史归属。
 
-- [ ] **Step 1:** 写 `continuous_and_resumed_steps_match`、`cancel_commits_after_complete_step`、`probe_restores_all_mutable_state`、`interrupted_checkpoint_keeps_previous`、`manual_batch_is_never_overridden`；使用真实小模型/固定批验证参数、优化器、BN、采样/随机状态恢复；在写入阶段注入失败验证旧 checkpoint 仍可加载。`training_convergence` 固定几对样本反复训练，断言 loss 有限、参数确实更新且最终 loss 低于起点。关键断言：`assert_eq!(restored.global_step, before.global_step); assert_eq!(restored.sampler_state, before.sampler_state); assert!(final_loss < initial_loss);`。
-- [ ] **Step 2:** `cargo test -p feathertalk-engine --features flex --test training_resume --test training_convergence`，预期训练/恢复能力缺失 FAIL。
-- [ ] **Step 3:** 实现 Adam 和原始成对训练路径、完整 dry-run 批量探测、状态回滚、定期/取消保存、总 epoch 续训和跨设备记录。检查点写入独立 staging 目录后原子提交，已提交引用最后更新；曲线历史追加采样记录，UI 指标最多 2Hz，不在每一步同步读回所有分项。恢复前校验素材、预处理及模型身份，明确拒绝不匹配的续训。
-- [ ] **Step 4:** 重跑测试，预期 CPU 全部 PASS；已有 GPU 各跑完整训练步与短程过拟合；同一检查点在 CPU↔GPU 加载后前向通过容差、可继续更新。OOM 在一键探测中可尝试更小批量，在手动模式提供建议。实际训练步中取消保存与意外终止后恢复分别验证。
-- [ ] **Step 5:** 提交 `feat: train and resume FeatherTalk with atomic checkpoints`。
+- [x] **Step 1:** 写 `continuous_and_resumed_steps_match`、`cancel_commits_after_complete_step`、`probe_restores_all_mutable_state`、`interrupted_checkpoint_keeps_previous`、`manual_batch_is_never_overridden`；使用真实小模型/固定批验证参数、优化器、BN、采样/随机状态恢复；在写入阶段注入失败验证旧 checkpoint 仍可加载。`training_convergence` 固定几对样本反复训练，断言 loss 有限、参数确实更新且最终 loss 低于起点。关键断言：`assert_eq!(restored.global_step, before.global_step); assert_eq!(restored.sampler_state, before.sampler_state); assert!(final_loss < initial_loss);`。
+- [x] **Step 2:** `cargo test -p feathertalk-engine --features flex --test training_resume --test training_convergence`，预期训练/恢复能力缺失 FAIL。
+- [x] **Step 3:** 实现 Adam 和原始成对训练路径、完整 dry-run 批量探测、状态回滚、定期/取消保存、总 epoch 续训和跨设备记录。检查点写入独立 staging 目录后原子提交，已提交引用最后更新；曲线历史追加采样记录，UI 指标最多 2Hz，不在每一步同步读回所有分项。恢复前校验素材、预处理及模型身份，明确拒绝不匹配的续训。
+- [x] **Step 4:** 重跑测试，预期 CPU 全部 PASS；已有 GPU 各跑完整训练步与短程过拟合；同一检查点在 CPU↔GPU 加载后前向通过容差、可继续更新。OOM 在一键探测中可尝试更小批量，在手动模式提供建议。实际训练步中取消保存与意外终止后恢复分别验证。
+- [x] **Step 5:** 提交 `feat: train and resume FeatherTalk with atomic checkpoints`。
+
+执行记录：Task9 按训练阶段补充计划完成，并通过逐阶段独立审查。初始行为测试的完整 RED 顺序未全部在实现前执行；真实回归具有单独 RED/GREEN 记录。勾选项表示行为实现与可用验证完成，不宣称补齐历史测试顺序。CPU/RTX2060 的实际训练与恢复已验证，其他硬件、平台和真人素材效果仍为后续验收事项。
 
 ## Task 10: 离线生成、回贴和原子导出
 

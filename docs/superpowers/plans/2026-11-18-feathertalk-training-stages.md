@@ -68,10 +68,12 @@ Execution note: initial RED established the missing API; broader behavioral case
 **Consumes:** reviewed9b snapshot +9c complete step, explicit TrainingRuntime{probe_runner:PathBuf} and ProbeContext per task-9-probe-ruling.md.
 **Produces:** probe_batch_size and train with explicit runtime injection; TrainingResult with committedModelRef/stoppingreason.
 
-- [ ] Step1: Failing tests for Fixedneverprobe, Auto <=target, stateunchanged+nextrealstepmatch, processfaultclassification/cleanup/staleresultrejection, cancellationcommitaftercompletedstep, interruptedrecovery.
-- [ ] Step2: Reconstruct full state in disposable candidate process, actual fullVGGbackwardAdam, request-bound atomic typedresult, narrow evidencedOOMretry and unknowncrasherror, hiddenWindowschild/killwait/ownedcleanup. No deliberate machineOOMtest.
-- [ ] Step3: Public loop createsnewrun/preservesresumedrun, targettotalepochs, periodic+cancel+finalimmutablecheckpoints, history sampling, manualOOMsuggestion. Complete actualCPU/GPU trainandresume/probesuccess integration withtruthful logs.
-- [ ] Step4: Cover final APIs, full parentTask9 requiredchecks, self-review and scopedcommit/freshreview. Only then mark parentTask9 complete and startTask10.
+- [x] Step1: Failing tests for Fixedneverprobe, Auto <=target, stateunchanged+nextrealstepmatch, processfaultclassification/cleanup/staleresultrejection, cancellationcommitaftercompletedstep, interruptedrecovery.
+- [x] Step2: Reconstruct full state in disposable candidate process, actual fullVGGbackwardAdam, request-bound atomic typedresult, narrow evidencedOOMretry and unknowncrasherror, hiddenWindowschild/killwait/ownedcleanup. No deliberate machineOOMtest.
+- [x] Step3: Public loop createsnewrun/preservesresumedrun, targettotalepochs, periodic+cancel+finalimmutablecheckpoints, history sampling, manualOOMsuggestion. Complete actualCPU/GPU trainandresume/probesuccess integration withtruthful logs.
+- [x] Step4: Cover final APIs, full parentTask9 requiredchecks, self-review and scopedcommit/freshreview. Only then mark parentTask9 complete and startTask10.
 
 This partition changes implementation granularity only. Missing external footage/devices remain explicit pending acceptance; no stage substitutes compilation/protocolfixtures for real full-objective execution.
 
+
+Execution record: Stage9d and parentTask9 passed independent spec/quality review at d87ba5b. The initial full behavioral RED sequence was incomplete; the genuine probe-cancellation regression has separate RED/GREEN evidence. Checked boxes record implemented behavior and available verification, with that historical process exception retained. External hardware, footage/effects and later worker/UI/package acceptance remain pending.
