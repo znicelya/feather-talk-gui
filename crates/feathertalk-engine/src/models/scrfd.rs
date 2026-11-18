@@ -82,37 +82,7 @@ impl Scrfd {
         &self,
         frame: &crate::data::landmarks::BgrFrame,
     ) -> Result<Vec<crate::data::landmarks::Detection>> {
-        if frame.width == 0
-            || frame.height == 0
-            || frame.stride < frame.width.saturating_mul(3)
-            || frame.data.len() < frame.height.saturating_mul(frame.stride)
-        {
-            return Err(error("Invalid detector frame"));
-        }
-        let ratio = frame.height as f64 / frame.width as f64;
-        let (w, h) = if ratio > 1. {
-            ((640. / ratio) as usize, 640)
-        } else if ratio < 1. {
-            (640, (640. * ratio) as usize + 1)
-        } else {
-            (640, 640)
-        };
-        if w == 0 || h == 0 || w > 640 || h > 640 {
-            return Err(error(
-                "Frame aspect ratio cannot be resized to detector input",
-            ));
-        }
-        let resized = crate::data::image::resize_linear(frame, w, h, true);
-        let (px, py) = ((640 - w) / 2, (640 - h) / 2);
-        let mut values = vec![-127.5 / 128.; 3 * 640 * 640];
-        for y in 0..h {
-            for x in 0..w {
-                for c in 0..3 {
-                    values[c * 640 * 640 + (y + py) * 640 + x + px] =
-                        (resized.data[y * resized.stride + x * 3 + 2 - c] as f32 - 127.5) / 128.;
-                }
-            }
-        }
+        let (values, [h, w, py, px]) = detector_input(frame)?;
         let device = self.model.devices()[0].clone();
         let raw = self.forward(Tensor::from_data(
             burn::tensor::TensorData::new(values, [1, 3, 640, 640]),
@@ -124,6 +94,41 @@ impl Scrfd {
             .collect::<Result<_>>()?;
         return decode_outputs(&raw, frame.width, frame.height, w, h, px, py);
     }
+}
+/// The exact host preprocessing used by detect, exposed for source parity checks.
+pub fn detector_input(frame: &crate::data::landmarks::BgrFrame) -> Result<(Vec<f32>, [usize; 4])> {
+    if frame.width == 0
+        || frame.height == 0
+        || frame.stride < frame.width.saturating_mul(3)
+        || frame.data.len() < frame.height.saturating_mul(frame.stride)
+    {
+        return Err(error("Invalid detector frame"));
+    }
+    let ratio = frame.height as f64 / frame.width as f64;
+    let (w, h) = if ratio > 1. {
+        ((640. / ratio) as usize, 640)
+    } else if ratio < 1. {
+        (640, (640. * ratio) as usize + 1)
+    } else {
+        (640, 640)
+    };
+    if w == 0 || h == 0 || w > 640 || h > 640 {
+        return Err(error(
+            "Frame aspect ratio cannot be resized to detector input",
+        ));
+    }
+    let resized = crate::data::image::resize_linear(frame, w, h, true);
+    let (px, py) = ((640 - w) / 2, (640 - h) / 2);
+    let mut values = vec![-127.5 / 128.; 3 * 640 * 640];
+    for y in 0..h {
+        for x in 0..w {
+            for c in 0..3 {
+                values[c * 640 * 640 + (y + py) * 640 + x + px] =
+                    (resized.data[y * resized.stride + x * 3 + 2 - c] as f32 - 127.5) / 128.;
+            }
+        }
+    }
+    Ok((values, [h, w, py, px]))
 }
 pub fn decode_outputs(
     raw: &[Vec<f32>],

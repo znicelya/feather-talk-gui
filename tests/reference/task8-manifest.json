@@ -1,0 +1,17 @@
+{
+  "files": {
+    "geometry_100.safetensors": "b9f7ab660c0009aeb998426563458f61906f4f69462dc3d5e30c8f1f9df1a5fc",
+    "geometry_151.safetensors": "02262f1c2be56a634fcf8bd2a9ed8f3960d7ba6430a8acd810aa5eac770985f7",
+    "geometry_153.safetensors": "a1f3c37401071f2027f10c00bb98aece7243b56e37d32b3edb623fc794cc9e7f",
+    "geometry_159.safetensors": "df39430d82783a9e0e6434d3bfa0fce366c3610a790d5de891db28dcf805f8e2",
+    "geometry_161.safetensors": "cf9e943f320197179371692c69bf6f30be2522a5fd7f39cd45210d9b90cf8507",
+    "geometry_213.safetensors": "1041ec081c1f5d5506d93e4d3da127d042cf45dbf0741a8864ea98fa15a71824",
+    "geometry_71.safetensors": "a244392b70f1465adcfcbed576865b8ef2ee5d0c01d01d0ccdb59492801c3ce4"
+  },
+  "numpy": "2.1.3",
+  "opencv": "4.10.0",
+  "sources": {
+    "dataset_mouth_roi.py": "a81bd47507b1f06f3f9ebab04e5b649eb953bf284e4ae1c277f3ec0b006e600f",
+    "face_utils.py": "1c6b917b230fe233193e4f6f6f2bdef3acd0afe9afdb4fac9ae2c0c6b8a3a6a8"
+  }
+}

@@ -30,6 +30,14 @@ pub fn normalize_waveform(samples: &[f32]) -> Result<Vec<f32>> {
         .collect())
 }
 pub fn extract_audio_features(model: &FeatherHubert, samples_16k: &[f32]) -> Result<AudioFeatures> {
+    extract_audio_features_cancellable(model, samples_16k, &Cancellation::new())
+}
+/// Cancellation is observed between bounded neural chunks (a running kernel is not interrupted).
+pub fn extract_audio_features_cancellable(
+    model: &FeatherHubert,
+    samples_16k: &[f32],
+    cancel: &Cancellation,
+) -> Result<AudioFeatures> {
     if samples_16k.len() < 400 {
         return Err(invalid("Audio is too short to produce a HuBERT token"));
     }
@@ -38,6 +46,7 @@ pub fn extract_audio_features(model: &FeatherHubert, samples_16k: &[f32]) -> Res
     let chunk = 320000;
     let mut values = Vec::with_capacity(expected * 1024);
     for i in 0..=samples.len() / chunk {
+        crate::media::ffmpeg::check(cancel)?;
         let start = i * chunk;
         let end = (start + chunk + 80).min(samples.len());
         if end - start < 400 {
