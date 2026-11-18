@@ -45,7 +45,7 @@ fn contained(root: &Path, relative: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 pub(super) fn validate_metadata(root: &Path, m: &TrainingMetadata) -> Result<()> {
-    m.config.validate()?;
+    super::state::validate_adam_config(&m.config)?;
     if m.schema_version != 1
         || m.architecture != "feathertalk-default-v1-447"
         || m.seed_policy.version != 1

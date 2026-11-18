@@ -362,3 +362,65 @@ fn batch_norm_lifecycle_is_independent_and_nontrainable() {
         assert_eq!(b.count.val().dtype(), burn::tensor::DType::I64);
     }
 }
+
+#[test]
+fn learning_rate_validation_preserves_restorable_state() {
+    let device = device();
+    let (root, prepared) = fixture();
+    let request = TrainRequest {
+        batch_mode: BatchMode::Auto,
+        project_id: prepared.project_id,
+        config: TrainConfig::default(),
+        device: DevicePolicy::Auto,
+        resume: None,
+    };
+    let mut state = TrainingState::fresh(&request, &prepared, &device).unwrap();
+    let before_metadata = state.metadata.clone();
+    let before_optimizer = state.optimizer_bytes().unwrap();
+    let before_model = model_bytes(&state.model).unwrap();
+    for rate in [1e100, 1e-100, 0., -0.001, f64::INFINITY, f64::NAN] {
+        assert!(
+            state.set_learning_rate(rate).is_err(),
+            "accepted rate {rate}"
+        );
+        assert_eq!(state.metadata, before_metadata);
+        assert_eq!(state.optimizer_bytes().unwrap(), before_optimizer);
+    }
+    super::checkpoint_validation::equal_pack(&before_model, &model_bytes(&state.model).unwrap())
+        .unwrap();
+    // A rejected setter must leave even a newly saved product checkpoint loadable.
+    let reference = save_checkpoint(&state, &root.join("checkpoints/rejected-rate")).unwrap();
+    let loaded = load_checkpoint(&root, &reference, &device).unwrap();
+    assert_eq!(loaded.metadata, before_metadata);
+    super::checkpoint_validation::equal_pack(&before_model, &model_bytes(&loaded.model).unwrap())
+        .unwrap();
+    for rate in [1e100, 1e-100] {
+        let mut invalid_request = request.clone();
+        invalid_request.config.lr = rate;
+        assert!(TrainingState::fresh(&invalid_request, &prepared, &device).is_err());
+        // Internal reconstruction cannot bypass the capture boundary's numeric validation.
+        let mut metadata = before_metadata.clone();
+        metadata.config.lr = rate;
+        let invalid_state = TrainingState::from_parts(
+            state.model.clone(),
+            super::state::adam(&request.config).unwrap(),
+            metadata.clone(),
+            root.clone(),
+        );
+        assert!(MaterializedSnapshot::capture(&invalid_state).is_err());
+        assert!(super::checkpoint::validate_metadata(&root, &metadata).is_err());
+    }
+    // Positive F32 subnormals are supported; values rounding to zero are not.
+    let subnormal = f32::from_bits(1) as f64;
+    state.set_learning_rate(subnormal).unwrap();
+    let snapshot = MaterializedSnapshot::capture(&state).unwrap();
+    let restored = snapshot.restore(&root, &device).unwrap();
+    assert_eq!(restored.metadata.config.lr, subnormal);
+    state.set_learning_rate(0.002).unwrap();
+    let snapshot = MaterializedSnapshot::capture(&state).unwrap();
+    let restored = snapshot.restore(&root, &device).unwrap();
+    assert_eq!(restored.metadata, state.metadata);
+    super::checkpoint_validation::equal_pack(&before_model, &model_bytes(&restored.model).unwrap())
+        .unwrap();
+    assert_eq!(restored.optimizer_bytes().unwrap(), before_optimizer);
+}

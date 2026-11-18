@@ -89,16 +89,22 @@ pub struct TrainingState {
     pub metadata: TrainingMetadata,
     pub(crate) project_directory: PathBuf,
 }
-pub(crate) fn adam(c: &TrainConfig) -> Result<ModuleOptimizer> {
+/// Shared persistence/execution domain: lr and epsilon must remain positive in
+/// F32 (representable subnormals are allowed). Beta/decay may round to zero.
+pub(crate) fn validate_adam_config(c: &TrainConfig) -> Result<()> {
     c.validate()?;
     for v in [c.beta1, c.beta2, c.epsilon, c.weight_decay, c.lr] {
         if !(v as f32).is_finite() {
             return Err(invalid("Adam configuration exceeds F32 range"));
         }
     }
-    if c.epsilon as f32 <= 0. || c.beta1 as f32 >= 1. || c.beta2 as f32 >= 1. {
+    if c.lr as f32 <= 0. || c.epsilon as f32 <= 0. || c.beta1 as f32 >= 1. || c.beta2 as f32 >= 1. {
         return Err(invalid("Adam configuration rounds outside supported range"));
     }
+    Ok(())
+}
+pub(crate) fn adam(c: &TrainConfig) -> Result<ModuleOptimizer> {
+    validate_adam_config(c)?;
     Ok(AdamConfig::new()
         .with_beta_1(c.beta1 as f32)
         .with_beta_2(c.beta2 as f32)
@@ -135,13 +141,14 @@ impl TrainingState {
         self.validate_optimizer_config()?;
         let mut config = self.metadata.config.clone();
         config.lr = learning_rate;
-        config.validate()?;
+        validate_adam_config(&config)?;
         self.metadata.config = config;
         self.optimizer_config[4] = learning_rate;
         Ok(())
     }
     fn validate_optimizer_config(&self) -> Result<()> {
         let c = &self.metadata.config;
+        validate_adam_config(c)?;
         if self.optimizer_config != [c.beta1, c.beta2, c.epsilon, c.weight_decay, c.lr] {
             return Err(invalid(
                 "Adam hyperparameters changed without rebuilding state",
@@ -153,7 +160,6 @@ impl TrainingState {
     /// together after this succeeds; snapshots reject incomplete optimizer counters.
     pub fn apply_gradients(&mut self, gradients: GradientsParams) -> Result<()> {
         self.validate_optimizer_config()?;
-        self.metadata.config.validate()?;
         self.model = self
             .optimizer
             .step(self.metadata.config.lr, self.model.clone(), gradients);
@@ -164,7 +170,7 @@ impl TrainingState {
         prepared: &PreparedProject,
         device: &ExecutionDevice,
     ) -> Result<Self> {
-        request.config.validate()?;
+        validate_adam_config(&request.config)?;
         if request.resume.is_some()
             || request.project_id != prepared.project_id
             || prepared.usable_frames < 2
