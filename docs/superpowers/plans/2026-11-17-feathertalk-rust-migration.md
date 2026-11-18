@@ -172,11 +172,13 @@ Rust 中标注为 `Result<T>` 的自有接口均使用 core 的 `type Result<T> 
 
 **Interfaces:** `generate(request: &GenerateRequest, prepared: &PreparedProject, assets: &Path, tools: &MediaTools, device: &ExecutionDevice, observer: &dyn TaskObserver, cancel: &Cancellation) -> Result<ExportResult>`；`FramePicker::next() -> usize`；`FrameRenderer::render(frame_index: u64, features: &AudioFeatures) -> Result<BgrFrame>`。`ExportResult { output_path, video_frames, elapsed_ms, device }`。`AudioSource` 提供 session/reset/read/finish，`FrameSink` 提供 write/finish/abort，使用带整数时间基的 `TimestampedAudio`/`TimestampedFrame`；首版实现文件来源与文件输出，不伪装为已有流式模型。
 
-- [ ] **Step 1:** `render_parity` 验证原版往返资源帧序列、模型输入/窗口、回贴中心和边框不变；`video_export` 验证 25 FPS、H.264/AAC、输入画幅、按特征得到的帧数、中文/空格路径、已有目标文件和编码失败。取消/失败不得覆盖已有成功成品，子进程须退出且新临时成品不被报告成功。关键断言：`assert_eq!(probe["streams"][0]["codec_name"], "h264"); assert_eq!(export.video_frames, features.video_frames as u64); assert_eq!(old_output_bytes, output_bytes_after_cancel);`。
-- [ ] **Step 2:** `cargo test -p feathertalk-engine --features flex --test render_parity --test video_export`，预期尚无导出实现 FAIL。
-- [ ] **Step 3:** 实现音频输入规范化、一次提取特征、按序视觉推理与回贴、FFmpeg stdin/文件接入及最终封装；进程参数以 OsString/args 传递，不拼 shell 字符串。输出先写同目标目录临时文件，成功关闭并核验后替换目标；日志保留 FFmpeg 的真实失败信息。会话接口使用有界批量，模型层与前端无耦合。
-- [ ] **Step 4:** 重跑验证，预期 PASS；CPU 与已具备 GPU 使用相同检查点生成，逐帧回贴结果在固定容差内且可播放；断网运行完整生成；记录实际设备与阶段耗时。
-- [ ] **Step 5:** 提交 `feat: generate talking-head videos with recoverable export`。
+- [x] **Step 1:** `render_parity` 验证原版往返资源帧序列、模型输入/窗口、回贴中心和边框不变；`video_export` 验证 25 FPS、H.264/AAC、输入画幅、按特征得到的帧数、中文/空格路径、已有目标文件和编码失败。取消/失败不得覆盖已有成功成品，子进程须退出且新临时成品不被报告成功。关键断言：`assert_eq!(probe["streams"][0]["codec_name"], "h264"); assert_eq!(export.video_frames, features.video_frames as u64); assert_eq!(old_output_bytes, output_bytes_after_cancel);`。
+- [x] **Step 2:** `cargo test -p feathertalk-engine --features flex --test render_parity --test video_export`，预期尚无导出实现 FAIL。
+- [x] **Step 3:** 实现音频输入规范化、一次提取特征、按序视觉推理与回贴、FFmpeg stdin/文件接入及最终封装；进程参数以 OsString/args 传递，不拼 shell 字符串。输出先写同目标目录临时文件，成功关闭并核验后替换目标；日志保留 FFmpeg 的真实失败信息。会话接口使用有界批量，模型层与前端无耦合。
+- [x] **Step 4:** 重跑验证，预期 PASS；CPU 与已具备 GPU 使用相同检查点生成，逐帧回贴结果在固定容差内且可播放；断网运行完整生成；记录实际设备与阶段耗时。
+- [x] **Step 5:** 提交 `feat: generate talking-head videos with recoverable export`。
+
+执行记录：Task10 在 CPU/RTX2060 CUDA 完成真实预处理、训练检查点和生成验证，并通过独立审查。原 Python 目录可能发生首次导入字节码缓存写入，已记录偏差并禁止后续写入；未声称恢复未知历史缓存。当前记录总生成耗时，分阶段耗时留待性能任务；整机强制断网、WebView 奇数画幅播放和真人素材效果仍留作对应后续验收。
 
 ## Task 11: 可校验的资源缓存与离线就绪检查
 
