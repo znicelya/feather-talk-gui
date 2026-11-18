@@ -186,11 +186,13 @@ Rust 中标注为 `Result<T>` 的自有接口均使用 core 的 `type Result<T> 
 
 **Interfaces:** `ResourceManager::new(root: PathBuf, catalog: Catalog) -> Result<Self>`；`inventory(&self, target: &TargetPlatform) -> Result<ResourceInventory>`；`prepare(&self, selection: &ResourceSelection, observer: &dyn TaskObserver, cancel: &Cancellation) -> Result<ResourceInventory>`；`import_local(&self, manifest: &Path) -> Result<()>`。Catalog 使用 Task 1 AssetManifest，并增加平台/架构/组件 kind；`ResourceSelection` 指定目标与所需版本；`ResourceInventory { ready: bool, items: Vec<ResourceStatus> }` 列出每项身份/路径/就绪或失败原因，类型放入 core assets 模块供 UI 共用。
 
-- [ ] **Step 1:** 用 loopback HTTP fixture 写 `partial_and_bad_hash_never_become_ready`、`offline_uses_complete_versions`、`upgrade_preserves_project_dependency`、`executable_matches_target`；截断/错误哈希/不支持的架构不能安装，失败后旧版仍可用；准备好的资源断网验证不发 HTTP 请求，缺资源给出所缺项。关键断言：`assert!(!corrupt_inventory.ready); assert!(complete_inventory.ready); assert_eq!(offline_request_count, 0);`。
-- [ ] **Step 2:** `cargo test -p feather-talk-gui --test resource_cache`，预期资源服务缺失 FAIL。
-- [ ] **Step 3:** 实现版本目录、文件大小/SHA-256 校验、暂存提交、进度与重试；从 Task 2 输出导入开发资源；下载只发生在显式准备/更新阶段。使用真实可配置 catalog，不编造生产 URL，不把现有标记未批准分发的模型自动公开上传。组件安装维护平台可执行权限，并保留 notices/来源信息。
-- [ ] **Step 4:** 重跑资源测试，预期 PASS；从开发 catalog 导入公共模型/均值脸/worker/媒体组件后拔网，inventory 全就绪；替换一个文件字节必须显示损坏并可安全重新获取。
-- [ ] **Step 5:** 提交 `feat: manage verified model and component resources offline`。
+- [x] **Step 1:** 用 loopback HTTP fixture 写 `partial_and_bad_hash_never_become_ready`、`offline_uses_complete_versions`、`upgrade_preserves_project_dependency`、`executable_matches_target`；截断/错误哈希/不支持的架构不能安装，失败后旧版仍可用；准备好的资源断网验证不发 HTTP 请求，缺资源给出所缺项。关键断言：`assert!(!corrupt_inventory.ready); assert!(complete_inventory.ready); assert_eq!(offline_request_count, 0);`。
+- [x] **Step 2:** `cargo test -p feather-talk-gui --test resource_cache`，预期资源服务缺失 FAIL。
+- [x] **Step 3:** 实现版本目录、文件大小/SHA-256 校验、暂存提交、进度与重试；从 Task 2 输出导入开发资源；下载只发生在显式准备/更新阶段。使用真实可配置 catalog，不编造生产 URL，不把现有标记未批准分发的模型自动公开上传。组件安装维护平台可执行权限，并保留 notices/来源信息。
+- [x] **Step 4:** 重跑资源测试，预期 PASS；从开发 catalog 导入公共模型/均值脸/worker/媒体组件后拔网，inventory 全就绪；替换一个文件字节必须显示损坏并可安全重新获取。
+- [x] **Step 5:** 提交 `feat: manage verified model and component resources offline`。
+
+执行记录：Task11 资源管理及当前模型/媒体/CPU 探测/CUDA 数学库导入已验证，并通过修复后独立审查。worker 与其他后端/平台组件留待后续实际构建，因此完整应用仍明确为未就绪；当前验证本地资源复用与零 HTTP，整机断网和生产资源地址/分发依据仍待对应验收。
 
 ## Task 12: 独立 worker、单任务运行与故障归属
 
