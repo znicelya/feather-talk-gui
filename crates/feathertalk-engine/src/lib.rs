@@ -1,6 +1,6 @@
 pub mod data;
-pub mod media;
 pub mod device;
+pub mod media;
 pub mod models;
 pub mod ops;
 mod reference;

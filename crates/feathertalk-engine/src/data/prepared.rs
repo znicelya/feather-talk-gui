@@ -470,6 +470,42 @@ fn load(root: &Path, index: &Index, project: &ProjectManifest) -> Result<Prepare
     prepared.validate()?;
     Ok(prepared)
 }
+
+/// Reopen a checkpoint-pinned immutable generation, independent of the latest cache index.
+pub fn reopen_generation(
+    root: &Path,
+    project: &ProjectManifest,
+    relative: &Path,
+    manifest_sha256: &str,
+) -> Result<PreparedProject> {
+    safe_relative(relative)?;
+    let root = fs::canonicalize(root).map_err(invalid)?;
+    let path = root.join(relative).join("manifest.json");
+    if !fs::canonicalize(&path).map_err(invalid)?.starts_with(&root) {
+        return Err(invalid("Prepared manifest escapes project"));
+    }
+    let bytes = fs::read(path).map_err(invalid)?;
+    if digest(&bytes) != manifest_sha256 {
+        return Err(invalid("Pinned prepared manifest changed"));
+    }
+    let generation: Generation = serde_json::from_slice(&bytes).map_err(invalid)?;
+    let index = Index {
+        generation: relative.into(),
+        manifest_sha256: manifest_sha256.into(),
+        input_identity: generation.input_identity,
+    };
+    let prepared = load(&root, &index, project)?;
+    if prepared.preprocessing.source_sha256 != project.source_video.sha256
+        || prepared.preprocessing.cache_directory != relative
+        || project
+            .preprocessing
+            .as_ref()
+            .is_some_and(|p| p != &prepared.preprocessing)
+    {
+        return Err(invalid("Pinned preprocessing does not match project"));
+    }
+    Ok(prepared)
+}
 struct Cleanup {
     path: PathBuf,
     directory: bool,

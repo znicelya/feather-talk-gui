@@ -3344,6 +3344,7 @@ name = "feathertalk-engine"
 version = "0.1.0"
 dependencies = [
  "burn",
+ "burn-pack",
  "burn-store",
  "feathertalk-core",
  "safetensors 0.5.3",
