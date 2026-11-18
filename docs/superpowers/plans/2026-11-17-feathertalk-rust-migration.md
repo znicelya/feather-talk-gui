@@ -110,11 +110,11 @@ Rust 中标注为 `Result<T>` 的自有接口均使用 core 的 `type Result<T> 
 
 **Interfaces:** `Scrfd::load(assets: &Path, device: &Device) -> Result<Self>`、`detect(&self, frame: &BgrFrame) -> Result<Vec<Detection>>`；`PfldGhostOne::load(assets: &Path, device: &Device) -> Result<Self>`、`forward(&self, input: Tensor<4>) -> Tensor<2>`；`locate_face(detector: &Scrfd, landmarks: &PfldGhostOne, mean_face: &[f32;220], frame: &BgrFrame) -> Result<Landmarks>`。`BgrFrame { width, height, stride, data }`、`Rect { x,y,width,height }`、`Detection { bbox,score,keypoints }`、`Landmarks { points: [[i32;2];110] }` 定义于 engine 的 data 模块。
 
-- [ ] **Step 1:** 写 `scrfd_levels_and_nms_match`、`pfld_raw_outputs_match`、`mean_face_and_border_coordinates_match`、`no_face_is_actionable`；验证 SCRFD 三个 stride 输出与 score/bbox/kps 后处理、0.1 检测阈值/0.5 NMS、原版第一个有效主体规则、1.05 扩框/黑色补边、PFLD 192 输入、均值脸相加、坐标缩放及向零截断。关键断言：`assert_eq!(actual.points, reference.points); assert_eq!(no_face_error.code, ErrorCode::NoFace);`，整数坐标 fixture 覆盖负值截断与靠边补黑。
-- [ ] **Step 2:** `cargo test -p feathertalk-engine --features flex --test face_models_parity`，预期模型缺失或后处理误差 FAIL。
-- [ ] **Step 3:** 用匹配版本 burn-onnx 从原 ONNX 生成 SCRFD 代码，显式从已验证资源路径加载权重，避免 `Model::default()` 隐式依赖构建机绝对路径，依据 [burn-onnx 官方加载说明](https://docs.rs/burn-onnx/latest/burn_onnx/#loading-weights)。生成工具包名 `feathertalk-modelgen`，接受 `--input <onnx> --source-output <rs> --assets-output <dir>`，同步更新资产生成器版本和新权重哈希，保留原 ONNX 来源哈希。PFLD 先复刻 `inference_mode=False`、6 分支的 eval 结构及 checkpoint 映射；如重参数化，另生成并验证等价产物。移除未被 forward 使用的结构前先检查权重覆盖报告，不静默忽略执行必需参数。
-- [ ] **Step 4:** 重跑 CPU/GPU 对齐测试，预期 raw tensor 和最终 110 点均通过；修改均值脸任意值或哈希的测试副本必须拒绝加载。不存在人脸时保留帧号/阶段，不能下标越界崩溃。
-- [ ] **Step 5:** 提交 `feat: port face detection and landmark preprocessing`。
+- [x] **Step 1:** 写 `scrfd_levels_and_nms_match`、`pfld_raw_outputs_match`、`mean_face_and_border_coordinates_match`、`no_face_is_actionable`；验证 SCRFD 三个 stride 输出与 score/bbox/kps 后处理、0.1 检测阈值/0.5 NMS、原版第一个有效主体规则、1.05 扩框/黑色补边、PFLD 192 输入、均值脸相加、坐标缩放及向零截断。关键断言：`assert_eq!(actual.points, reference.points); assert_eq!(no_face_error.code, ErrorCode::NoFace);`，整数坐标 fixture 覆盖负值截断与靠边补黑。
+- [x] **Step 2:** `cargo test -p feathertalk-engine --features flex --test face_models_parity`，预期模型缺失或后处理误差 FAIL。
+- [x] **Step 3:** 用匹配版本 burn-onnx 从原 ONNX 生成 SCRFD 代码，显式从已验证资源路径加载权重，避免 `Model::default()` 隐式依赖构建机绝对路径，依据 [burn-onnx 官方加载说明](https://docs.rs/burn-onnx/latest/burn_onnx/#loading-weights)。生成工具包名 `feathertalk-modelgen`，接受 `--input <onnx> --source-output <rs> --assets-output <dir>`，同步更新资产生成器版本和新权重哈希，保留原 ONNX 来源哈希。PFLD 先复刻 `inference_mode=False`、6 分支的 eval 结构及 checkpoint 映射；如重参数化，另生成并验证等价产物。移除未被 forward 使用的结构前先检查权重覆盖报告，不静默忽略执行必需参数。
+- [x] **Step 4:** 重跑 CPU/GPU 对齐测试，预期 raw tensor 和最终 110 点均通过；修改均值脸任意值或哈希的测试副本必须拒绝加载。不存在人脸时保留帧号/阶段，不能下标越界崩溃。
+- [x] **Step 5:** 提交 `feat: port face detection and landmark preprocessing`。
 
 ## Task 6: 默认 FeatherTalk 人物网络
 
