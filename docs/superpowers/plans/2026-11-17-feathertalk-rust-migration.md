@@ -146,11 +146,11 @@ Rust 中标注为 `Result<T>` 的自有接口均使用 core 的 `type Result<T> 
 
 **Interfaces:** `MediaTools { ffmpeg: PathBuf, ffprobe: PathBuf }`；`prepare_project(project: &ProjectManifest, assets: &Path, tools: &MediaTools, device: &ExecutionDevice, observer: &dyn TaskObserver, cancel: &Cancellation) -> Result<PreparedProject>`，使用 Task 1 的观察器与取消令牌。`PreparedProject` 含 canonical video/audio、帧/关键点/特征索引及预处理身份。`PairSampler::new(prepared: &PreparedProject, seed: u64) -> Result<Self>`、`PairSampler::restore(prepared: &PreparedProject, state: SamplerState) -> Result<Self>`、`snapshot(&self) -> SamplerState`、`next_batch(&mut self, batch_size: usize) -> Result<Option<TrainingBatch>>`；SamplerState 保存 epoch、下一个 pair、置乱身份、参考帧随机计数/状态。`TrainingBatch` 为 image `[B,2,6,144,144]`、audio `[B,2,40,1024]`、target `[B,2,3,144,144]`、mask `[B,2,1,144,144]` 的可上传 CPU 数据，使用 `HostTensor<const N: usize> { dims: [usize;N], values: Vec<f32> }` 表达。
 
-- [ ] **Step 1:** 准备可执行的隔离 FFmpeg/FFprobe 组件供测试使用，并记录版本与来源。写 `geometry_matches_opencv`、`audio_edges_and_shared_reference_match`、`cache_invalidates_when_model_changes`、`sampler_replays_after_restore`；验证 152→144/边框4、MASK_RECT 缩放/取整、面积缩放、参考图顺序、嘴部 ROI、首尾补零、相邻帧共享参考及不配对最后一帧。`media_prepare` 使用 FFmpeg 合成 30 FPS/立体声与无音轨视频，验证副本 25 FPS、选择原版第一声道并准备 16 kHz、原文件哈希不变、无音轨有明确提示。关键断言：`assert_eq!(batch.image.dims, [1, 2, 6, 144, 144]); assert_eq!(batch.audio.dims, [1, 2, 40, 1024]);`。
-- [ ] **Step 2:** `cargo test -p feathertalk-engine --features flex --test data_parity --test media_prepare`，预期数据管线缺失 FAIL；FFmpeg 路径由 `FT_FFMPEG`/`FT_FFPROBE` 提供，缺失需明确报错。
-- [ ] **Step 3:** 实现规范化与有界抽帧/预取、关键点/特征缓存和身份校验；几何纯函数与参考对齐。Sampler 将 shuffle、参考帧选择与采样游标序列化为 `SamplerState`，随机性不依赖预取线程调度；检查取消并输出阶段/帧号进度。素材检测不到人脸时精确失败，不静默删除视频帧。
-- [ ] **Step 4:** 重跑上述测试，预期 PASS；变更音频模型哈希后必须重新提取特征；预取启用/禁用时，相同 sampler state 的下一批完全相同。采用真实验收素材后再跑全预处理并记录源/规范化文件与输出身份。
-- [ ] **Step 5:** 提交 `feat: prepare single-video datasets with reproducible sampling`。
+- [x] **Step 1:** 准备可执行的隔离 FFmpeg/FFprobe 组件供测试使用，并记录版本与来源。写 `geometry_matches_opencv`、`audio_edges_and_shared_reference_match`、`cache_invalidates_when_model_changes`、`sampler_replays_after_restore`；验证 152→144/边框4、MASK_RECT 缩放/取整、面积缩放、参考图顺序、嘴部 ROI、首尾补零、相邻帧共享参考及不配对最后一帧。`media_prepare` 使用 FFmpeg 合成 30 FPS/立体声与无音轨视频，验证副本 25 FPS、选择原版第一声道并准备 16 kHz、原文件哈希不变、无音轨有明确提示。关键断言：`assert_eq!(batch.image.dims, [1, 2, 6, 144, 144]); assert_eq!(batch.audio.dims, [1, 2, 40, 1024]);`。
+- [x] **Step 2:** `cargo test -p feathertalk-engine --features flex --test data_parity --test media_prepare`，预期数据管线缺失 FAIL；FFmpeg 路径由 `FT_FFMPEG`/`FT_FFPROBE` 提供，缺失需明确报错。
+- [x] **Step 3:** 实现规范化与有界抽帧/预取、关键点/特征缓存和身份校验；几何纯函数与参考对齐。Sampler 将 shuffle、参考帧选择与采样游标序列化为 `SamplerState`，随机性不依赖预取线程调度；检查取消并输出阶段/帧号进度。素材检测不到人脸时精确失败，不静默删除视频帧。
+- [x] **Step 4:** 重跑上述测试，预期 PASS；变更音频模型哈希后必须重新提取特征；预取启用/禁用时，相同 sampler state 的下一批完全相同。采用真实验收素材后再跑全预处理并记录源/规范化文件与输出身份。
+- [x] **Step 5:** 提交 `feat: prepare single-video datasets with reproducible sampling`。
 
 ## Task 9: 训练循环、批量探测和可恢复检查点
 
