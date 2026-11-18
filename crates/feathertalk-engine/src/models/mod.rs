@@ -8,6 +8,7 @@ pub mod attention;
 pub mod audio_adapter;
 pub mod feathertalk;
 pub mod scrfd;
+pub mod vgg;
 pub mod visual_blocks;
 #[cfg(feature = "dev-visual-fixtures")]
 pub mod visual_fixture;

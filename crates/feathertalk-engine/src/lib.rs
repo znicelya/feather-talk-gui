@@ -7,3 +7,4 @@ mod validation;
 mod verified_assets;
 pub use device::*;
 pub use validation::*;
+pub mod training;
