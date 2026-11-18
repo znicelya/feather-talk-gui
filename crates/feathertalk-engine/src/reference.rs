@@ -60,6 +60,12 @@ impl Reference {
                     .chunks_exact(8)
                     .map(|v| i64::from_le_bytes(v.try_into().unwrap()) as f32)
                     .collect(),
+                Dtype::I32 => t
+                    .data()
+                    .chunks_exact(4)
+                    .map(|v| i32::from_le_bytes(v.try_into().unwrap()) as f32)
+                    .collect(),
+                Dtype::U8 => t.data().iter().map(|&v| v as f32).collect(),
                 _ => return Err(error("Unsupported reference dtype")),
             };
             values.insert(name, (t.shape().to_vec(), data));

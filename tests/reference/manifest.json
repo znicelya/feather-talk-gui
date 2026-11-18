@@ -3867,6 +3867,45 @@
         "rtol": 0.0
       }
     },
+    "character_output_gradient": {
+      "configuration": {
+        "architecture": "FeatherTalk.Model",
+        "initial_state_sha256": "352ec7d6b5b7303530455d961387ea8ecd7318b1f0ade13c38718bf390f7e318",
+        "loss_coefficients": {
+          "full": 1,
+          "mouth": 4,
+          "mouth_grad": 0.5,
+          "percep": 0.01,
+          "temp": 0.5,
+          "temp_mouth": 4
+        },
+        "objective": "original train.compute_total_loss",
+        "prediction_shape": [
+          2,
+          3,
+          144,
+          144
+        ],
+        "temporal_lowpass_kernel": 5
+      },
+      "file": "character_output_gradient.safetensors",
+      "sha256": "2db68ad66186d7ffa8c7f6acce548d2c10696435e96c766bf043817d8952d136",
+      "tensors": {
+        "prediction_gradient": {
+          "dtype": "torch.float32",
+          "shape": [
+            2,
+            3,
+            144,
+            144
+          ]
+        }
+      },
+      "tolerance": {
+        "atol": 2e-06,
+        "rtol": 0.0005
+      }
+    },
     "character_training": {
       "configuration": {
         "frame_indices": [
@@ -3903,6 +3942,64 @@
       },
       "file": "character_training.safetensors",
       "sha256": "48305ecefbc466d90c9c14089d4b30a209767fa2214b95f3af361cb0d07efa04",
+      "tensor_tolerances": {
+        "audio_gradient": {
+          "atol": 3.4403322143234196e-05,
+          "calibration": {
+            "factor": 4,
+            "max_abs_source_error": 8.600830535808549e-06,
+            "method": "complete ORIGINAL FeatherTalk native FP32 VJP versus complete ORIGINAL FP64 VJP; identical frozen FP32 state, inputs and upstream widened",
+            "original_atol": 2e-06,
+            "original_gate_violations": 12013,
+            "rationale": "Deep ReLU branch sensitivity to forward rounding; native forward values with wide derivatives pass original gates. Four named full-model gradients only. Empirical bound does not ensure 1% global mutation sensitivity; strict local block and attention gates remain unchanged.",
+            "source_file_sha256": "f1d7c0c55d66839f257e4402316c343d719fa2b0553d15087263aab0f37de75f",
+            "zero_gradient_rejected": true
+          },
+          "rtol": 0.0005
+        },
+        "gradient.audio_model.norm.weight": {
+          "atol": 0.00010825292751663823,
+          "calibration": {
+            "factor": 4,
+            "max_abs_source_error": 2.706323187915956e-05,
+            "method": "complete ORIGINAL FeatherTalk native FP32 VJP versus complete ORIGINAL FP64 VJP; identical frozen FP32 state, inputs and upstream widened",
+            "original_atol": 2e-06,
+            "original_gate_violations": 1527,
+            "rationale": "Deep ReLU branch sensitivity to forward rounding; native forward values with wide derivatives pass original gates. Four named full-model gradients only. Empirical bound does not ensure 1% global mutation sensitivity; strict local block and attention gates remain unchanged.",
+            "source_file_sha256": "f1d7c0c55d66839f257e4402316c343d719fa2b0553d15087263aab0f37de75f",
+            "zero_gradient_rejected": true
+          },
+          "rtol": 0.0005
+        },
+        "gradient.inc.inconv.conv.0.weight": {
+          "atol": 1.4400116270822352,
+          "calibration": {
+            "factor": 4,
+            "max_abs_source_error": 0.3600029067705588,
+            "method": "complete ORIGINAL FeatherTalk native FP32 VJP versus complete ORIGINAL FP64 VJP; identical frozen FP32 state, inputs and upstream widened",
+            "original_atol": 2e-06,
+            "original_gate_violations": 71,
+            "rationale": "Deep ReLU branch sensitivity to forward rounding; native forward values with wide derivatives pass original gates. Four named full-model gradients only. Empirical bound does not ensure 1% global mutation sensitivity; strict local block and attention gates remain unchanged.",
+            "source_file_sha256": "f1d7c0c55d66839f257e4402316c343d719fa2b0553d15087263aab0f37de75f",
+            "zero_gradient_rejected": true
+          },
+          "rtol": 0.0005
+        },
+        "image_gradient": {
+          "atol": 0.18959691119467292,
+          "calibration": {
+            "factor": 4,
+            "max_abs_source_error": 0.04739922779866823,
+            "method": "complete ORIGINAL FeatherTalk native FP32 VJP versus complete ORIGINAL FP64 VJP; identical frozen FP32 state, inputs and upstream widened",
+            "original_atol": 2e-06,
+            "original_gate_violations": 239717,
+            "rationale": "Deep ReLU branch sensitivity to forward rounding; native forward values with wide derivatives pass original gates. Four named full-model gradients only. Empirical bound does not ensure 1% global mutation sensitivity; strict local block and attention gates remain unchanged.",
+            "source_file_sha256": "f1d7c0c55d66839f257e4402316c343d719fa2b0553d15087263aab0f37de75f",
+            "zero_gradient_rejected": true
+          },
+          "rtol": 0.0005
+        }
+      },
       "tensors": {
         "audio": {
           "dtype": "torch.float32",
@@ -7205,6 +7302,335 @@
       "tolerance": {
         "atol": 2e-05,
         "rtol": 0.0002
+      }
+    },
+    "visual_inverted_residual": {
+      "configuration": {
+        "expansion": 2,
+        "input_channels": 6,
+        "objective": "sum(output * nonlinear upstream_gradient)",
+        "output_channels": 24,
+        "residual": false,
+        "seed": 20261123,
+        "source_stability_and_mutations": {
+          "gradient.conv.0.weight": {
+            "fp64_max_abs_error": 1.058577105972347e-07,
+            "one_percent_mutation_rejected": true,
+            "zero_mutation_rejected": true
+          },
+          "gradient.conv.1.bias": {
+            "fp64_max_abs_error": 3.116626794141819e-08,
+            "one_percent_mutation_rejected": true,
+            "zero_mutation_rejected": true
+          },
+          "gradient.conv.1.weight": {
+            "fp64_max_abs_error": 4.6816881817471345e-08,
+            "one_percent_mutation_rejected": true,
+            "zero_mutation_rejected": true
+          },
+          "gradient.conv.3.weight": {
+            "fp64_max_abs_error": 2.027607006738208e-07,
+            "one_percent_mutation_rejected": true,
+            "zero_mutation_rejected": true
+          },
+          "gradient.conv.4.bias": {
+            "fp64_max_abs_error": 1.185671920801018e-07,
+            "one_percent_mutation_rejected": true,
+            "zero_mutation_rejected": true
+          },
+          "gradient.conv.4.weight": {
+            "fp64_max_abs_error": 1.0348028869205939e-07,
+            "one_percent_mutation_rejected": true,
+            "zero_mutation_rejected": true
+          },
+          "gradient.conv.6.weight": {
+            "fp64_max_abs_error": 1.5605955583364306e-07,
+            "one_percent_mutation_rejected": true,
+            "zero_mutation_rejected": true
+          },
+          "gradient.conv.7.bias": {
+            "fp64_max_abs_error": 4.126923158764839e-08,
+            "one_percent_mutation_rejected": true,
+            "zero_mutation_rejected": true
+          },
+          "gradient.conv.7.weight": {
+            "fp64_max_abs_error": 3.5657300834213146e-08,
+            "one_percent_mutation_rejected": true,
+            "zero_mutation_rejected": true
+          },
+          "input_gradient": {
+            "fp64_max_abs_error": 2.081448642610173e-08,
+            "one_percent_mutation_rejected": true,
+            "zero_mutation_rejected": true
+          }
+        },
+        "stride": 1
+      },
+      "file": "visual_inverted_residual.safetensors",
+      "sha256": "a4cd0fda73766aa8a6d5b8682644ec9c0ada9d345f76321704ead43ad51671db",
+      "tensors": {
+        "gradient.conv.0.weight": {
+          "dtype": "torch.float32",
+          "shape": [
+            12,
+            6,
+            1,
+            1
+          ]
+        },
+        "gradient.conv.1.bias": {
+          "dtype": "torch.float32",
+          "shape": [
+            12
+          ]
+        },
+        "gradient.conv.1.weight": {
+          "dtype": "torch.float32",
+          "shape": [
+            12
+          ]
+        },
+        "gradient.conv.3.weight": {
+          "dtype": "torch.float32",
+          "shape": [
+            12,
+            1,
+            3,
+            3
+          ]
+        },
+        "gradient.conv.4.bias": {
+          "dtype": "torch.float32",
+          "shape": [
+            12
+          ]
+        },
+        "gradient.conv.4.weight": {
+          "dtype": "torch.float32",
+          "shape": [
+            12
+          ]
+        },
+        "gradient.conv.6.weight": {
+          "dtype": "torch.float32",
+          "shape": [
+            24,
+            12,
+            1,
+            1
+          ]
+        },
+        "gradient.conv.7.bias": {
+          "dtype": "torch.float32",
+          "shape": [
+            24
+          ]
+        },
+        "gradient.conv.7.weight": {
+          "dtype": "torch.float32",
+          "shape": [
+            24
+          ]
+        },
+        "input": {
+          "dtype": "torch.float32",
+          "shape": [
+            2,
+            6,
+            7,
+            9
+          ]
+        },
+        "input_gradient": {
+          "dtype": "torch.float32",
+          "shape": [
+            2,
+            6,
+            7,
+            9
+          ]
+        },
+        "output": {
+          "dtype": "torch.float32",
+          "shape": [
+            2,
+            24,
+            7,
+            9
+          ]
+        },
+        "state.conv.0.weight": {
+          "dtype": "torch.float32",
+          "shape": [
+            12,
+            6,
+            1,
+            1
+          ]
+        },
+        "state.conv.1.bias": {
+          "dtype": "torch.float32",
+          "shape": [
+            12
+          ]
+        },
+        "state.conv.1.num_batches_tracked": {
+          "dtype": "torch.int64",
+          "shape": []
+        },
+        "state.conv.1.running_mean": {
+          "dtype": "torch.float32",
+          "shape": [
+            12
+          ]
+        },
+        "state.conv.1.running_var": {
+          "dtype": "torch.float32",
+          "shape": [
+            12
+          ]
+        },
+        "state.conv.1.weight": {
+          "dtype": "torch.float32",
+          "shape": [
+            12
+          ]
+        },
+        "state.conv.3.weight": {
+          "dtype": "torch.float32",
+          "shape": [
+            12,
+            1,
+            3,
+            3
+          ]
+        },
+        "state.conv.4.bias": {
+          "dtype": "torch.float32",
+          "shape": [
+            12
+          ]
+        },
+        "state.conv.4.num_batches_tracked": {
+          "dtype": "torch.int64",
+          "shape": []
+        },
+        "state.conv.4.running_mean": {
+          "dtype": "torch.float32",
+          "shape": [
+            12
+          ]
+        },
+        "state.conv.4.running_var": {
+          "dtype": "torch.float32",
+          "shape": [
+            12
+          ]
+        },
+        "state.conv.4.weight": {
+          "dtype": "torch.float32",
+          "shape": [
+            12
+          ]
+        },
+        "state.conv.6.weight": {
+          "dtype": "torch.float32",
+          "shape": [
+            24,
+            12,
+            1,
+            1
+          ]
+        },
+        "state.conv.7.bias": {
+          "dtype": "torch.float32",
+          "shape": [
+            24
+          ]
+        },
+        "state.conv.7.num_batches_tracked": {
+          "dtype": "torch.int64",
+          "shape": []
+        },
+        "state.conv.7.running_mean": {
+          "dtype": "torch.float32",
+          "shape": [
+            24
+          ]
+        },
+        "state.conv.7.running_var": {
+          "dtype": "torch.float32",
+          "shape": [
+            24
+          ]
+        },
+        "state.conv.7.weight": {
+          "dtype": "torch.float32",
+          "shape": [
+            24
+          ]
+        },
+        "updated_state.conv.1.num_batches_tracked": {
+          "dtype": "torch.int64",
+          "shape": []
+        },
+        "updated_state.conv.1.running_mean": {
+          "dtype": "torch.float32",
+          "shape": [
+            12
+          ]
+        },
+        "updated_state.conv.1.running_var": {
+          "dtype": "torch.float32",
+          "shape": [
+            12
+          ]
+        },
+        "updated_state.conv.4.num_batches_tracked": {
+          "dtype": "torch.int64",
+          "shape": []
+        },
+        "updated_state.conv.4.running_mean": {
+          "dtype": "torch.float32",
+          "shape": [
+            12
+          ]
+        },
+        "updated_state.conv.4.running_var": {
+          "dtype": "torch.float32",
+          "shape": [
+            12
+          ]
+        },
+        "updated_state.conv.7.num_batches_tracked": {
+          "dtype": "torch.int64",
+          "shape": []
+        },
+        "updated_state.conv.7.running_mean": {
+          "dtype": "torch.float32",
+          "shape": [
+            24
+          ]
+        },
+        "updated_state.conv.7.running_var": {
+          "dtype": "torch.float32",
+          "shape": [
+            24
+          ]
+        },
+        "upstream_gradient": {
+          "dtype": "torch.float32",
+          "shape": [
+            2,
+            24,
+            7,
+            9
+          ]
+        }
+      },
+      "tolerance": {
+        "atol": 2e-06,
+        "rtol": 0.0005
       }
     }
   },

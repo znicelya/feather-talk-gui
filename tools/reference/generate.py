@@ -154,10 +154,16 @@ def generate_reference(source_dir: Path, assets: Path, output_dir: Path) -> Path
     network('character_eval',character,(image.detach(),audio.detach()),['inc','down2','down4','audio_model','spatial_x3','fuse_conv','up4','outc'])
     character.train()
     prediction = character(image,audio)
+    prediction.retain_grad()
     perceptual = train.PerceptualLoss.__new__(train.PerceptualLoss)
     perceptual.content, perceptual.criterion = vgg, torch.nn.MSELoss()
     total, parts = train.compute_total_loss(prediction.reshape(1,2,3,144,144),labels,masks,torch.nn.L1Loss(),perceptual,4.0,0.5,4.0,0.01,0.5,5)
     total.backward()
+    save('character_output_gradient', {'prediction_gradient': prediction.grad},
+        {'architecture':'FeatherTalk.Model','objective':'original train.compute_total_loss',
+         'prediction_shape':[2,3,144,144], 'initial_state_sha256':entries['character_initial_state']['sha256'],
+         'loss_coefficients':{'full':1,'mouth':4,'temp':0.5,'temp_mouth':4,'percep':0.01,'mouth_grad':0.5},
+         'temporal_lowpass_kernel':5}, 'gradient')
     named = dict(character.named_parameters())
     # Select by module families while retaining actual source names in the index.
     chosen = [next(k for k,p in named.items() if k.startswith(prefix) and p.grad is not None) for prefix in ['inc.','audio_model.','spatial_x3.query.','spatial_x5.residual_gate','outc.']]
@@ -165,6 +171,11 @@ def generate_reference(source_dir: Path, assets: Path, output_dir: Path) -> Path
         'image_gradient':image.grad,'audio_gradient':audio.grad,'pair_frames_bgr':pair_frames,'pair_landmarks':pair_landmarks,'reference_bgr':reference_bgr,**{'loss.'+k:torch.tensor(v) for k,v in parts.items()},
         **{'gradient.'+k:named[k].grad for k in chosen}, **{'updated_state.'+k:v for k,v in character.state_dict().items() if 'running_' in k or 'num_batches_tracked' in k}},
         {'mode':'train','pair_shape':[1,2],'frame_indices':[10,11],'shared_reference':True,'input_channel_order':['reference_Bgr','masked_target_Bgr'],'target_source':'deterministic geometry frame and one-pixel shift','loss_coefficients':{'full':1,'mouth':4,'temp':0.5,'temp_mouth':4,'percep':0.01,'mouth_grad':0.5},'temporal_lowpass_kernel':5,'gradients':chosen}, 'gradient')
+    from visual_calibration import calibrate_character, local_block
+    entries['character_training']['tensor_tolerances'] = calibrate_character(
+        character, load_file(output_dir/'character_initial_state.safetensors'),
+        load_file(output_dir/'character_training.safetensors'), prediction.grad, tolerances['gradient'])
+    local_block(visual, save, tolerances['gradient'])
     # Independent derivatives isolate each original loss's backward semantics.
     pred = prediction.detach().clone().reshape_as(labels).requires_grad_()
     flat, target, flat_masks = pred.flatten(0,1), labels.flatten(0,1), masks.flatten(0,1)
