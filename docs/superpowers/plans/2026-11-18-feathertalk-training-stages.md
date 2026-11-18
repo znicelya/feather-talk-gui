@@ -32,9 +32,9 @@
 **Files:** core config.rs/protocol.rs/tests and focused new configuration test, optional tests-only dependency cleanup.
 **Interfaces:** TrainRequest.batch_mode Auto/Fixed (serde defaultAuto); TrainConfig.seed default42, prefetch_capacity default2 with0disabled..32, existingbatch<=1024 to match sampler. Other defaults unchanged.
 
-- [ ] Step1: Record genuine focused RED for new setting/default contracts.
-- [ ] Step2: Implement exact defaults/serde/validation/roundtrip; distinguish config-only Fixed from trainer enforcement.
-- [ ] Step3: Run core tests/fmt/diff, self-review and scoped commit; fresh stage review.
+- [x] Step1: Record genuine focused RED for new setting/default contracts.
+- [x] Step2: Implement exact defaults/serde/validation/roundtrip; distinguish config-only Fixed from trainer enforcement.
+- [x] Step3: Run core tests/fmt/diff, self-review and scoped commit; fresh stage review.
 
 ## Stage 9b: Complete state and atomic checkpoints
 
