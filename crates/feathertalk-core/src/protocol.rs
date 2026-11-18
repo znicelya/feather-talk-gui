@@ -8,9 +8,18 @@ use std::{
     },
 };
 pub const PROTOCOL_VERSION: u32 = 1;
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BatchMode {
+    #[default]
+    Auto,
+    Fixed,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TrainRequest {
+    #[serde(default)]
+    pub batch_mode: BatchMode,
     pub project_id: ProjectId,
     pub config: TrainConfig,
     pub device: DevicePolicy,

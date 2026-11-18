@@ -29,9 +29,16 @@ impl Default for LossConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TrainConfig {
+    /// Stable application-owned random seed; independent sampler and step domains.
+    #[serde(default = "default_training_seed")]
+    pub seed: u64,
+    /// Queued batches, 0 disables prefetch; bounded to 32.
+    #[serde(default = "default_prefetch_capacity")]
+    pub prefetch_capacity: u32,
     /// Total epochs, including epochs already completed by a resumed run.
     pub epochs: u32,
-    /// Target batch; metrics report the batch actually executed.
+    /// Target batch in Auto, exact requested batch in Fixed.
+    /// Metrics separately report the batch actually executed.
     pub batch_size: u32,
     pub lr: f64,
     pub beta1: f64,
@@ -41,9 +48,17 @@ pub struct TrainConfig {
     pub save_every: u32,
     pub loss: LossConfig,
 }
+fn default_training_seed() -> u64 {
+    42
+}
+fn default_prefetch_capacity() -> u32 {
+    2
+}
 impl Default for TrainConfig {
     fn default() -> Self {
         Self {
+            seed: default_training_seed(),
+            prefetch_capacity: default_prefetch_capacity(),
             epochs: 60,
             batch_size: 8,
             lr: 0.001,
@@ -76,6 +91,9 @@ impl TrainConfig {
             if value == 0 {
                 return Err(invalid(name));
             }
+        }
+        if self.batch_size > 1024 || self.prefetch_capacity > 32 {
+            return Err(invalid("batch_size <= 1024 and prefetch_capacity <= 32"));
         }
         if self.loss.temporal_kernel == 0 || self.loss.temporal_kernel % 2 == 0 {
             return Err(invalid("temporal_kernel (must be positive and odd)"));

@@ -193,6 +193,7 @@ fn protocol_roundtrips() {
         WorkerRequest::Start {
             task_id: id,
             job: JobSpec::Train(TrainRequest {
+                batch_mode: BatchMode::Auto,
                 project_id: m.project_id,
                 config: TrainConfig::default(),
                 device: DevicePolicy::Auto,
