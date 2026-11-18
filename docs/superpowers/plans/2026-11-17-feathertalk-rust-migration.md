@@ -98,11 +98,11 @@ Rust 中标注为 `Result<T>` 的自有接口均使用 core 的 `type Result<T> 
 
 **Interfaces:** `FeatherHubert::load(assets: &Path, device: &Device) -> Result<Self>`；`forward(&self, waveform: Tensor<2>) -> Tensor<3>`；`normalize_waveform(samples: &[f32]) -> Result<Vec<f32>>`；`extract_audio_features(model: &FeatherHubert, samples_16k: &[f32]) -> Result<AudioFeatures>`；`AudioFeatures { identity: ModelIdentity, video_frames: usize, values: Vec<f32> }`，布局 `[N,2,1024]`。
 
-- [ ] **Step 1:** 写 `hubert_parity`：当前 checkpoint 配置被正确采用；静音、短于 400 samples、奇数特征长度、长音频分块/上下文边界分别与参考相符；输出原始 token 数满足 `(samples - 80) / 320`，视频特征按原逻辑截为偶数 token 后分组；静音不产生 NaN，过短输入返回有动作建议的错误。关键断言：`assert_eq!(features.values.len(), features.video_frames * 2 * 1024); assert!(features.values.iter().all(|v| v.is_finite()));`。
-- [ ] **Step 2:** `cargo test -p feathertalk-engine --features flex --test hubert_parity`，预期当前模型缺失 FAIL。
-- [ ] **Step 3:** 实现配置驱动的前端卷积、GroupNorm/GELU/TCN/投影和映射；逐层载入校验权重，禁止静默随机初始化缺失参数。归一化、长音频处理与截断复刻当前参考，全部输出携带实际模型身份。
-- [ ] **Step 4:** 重跑 CPU 测试，并在已有 GPU 路径上执行相同测试，预期误差在固定容差内；大音频测试验证内存上界而非把所有中间激活永久缓存。
-- [ ] **Step 5:** 提交 `feat: port current FeatherHuBERT to Burn`。
+- [x] **Step 1:** 写 `hubert_parity`：当前 checkpoint 配置被正确采用；静音、短于 400 samples、奇数特征长度、长音频分块/上下文边界分别与参考相符；输出原始 token 数满足 `(samples - 80) / 320`，视频特征按原逻辑截为偶数 token 后分组；静音不产生 NaN，过短输入返回有动作建议的错误。关键断言：`assert_eq!(features.values.len(), features.video_frames * 2 * 1024); assert!(features.values.iter().all(|v| v.is_finite()));`。
+- [x] **Step 2:** `cargo test -p feathertalk-engine --features flex --test hubert_parity`，预期当前模型缺失 FAIL。
+- [x] **Step 3:** 实现配置驱动的前端卷积、GroupNorm/GELU/TCN/投影和映射；逐层载入校验权重，禁止静默随机初始化缺失参数。归一化、长音频处理与截断复刻当前参考，全部输出携带实际模型身份。
+- [x] **Step 4:** 重跑 CPU 测试，并在已有 GPU 路径上执行相同测试，预期误差在固定容差内；大音频测试验证内存上界而非把所有中间激活永久缓存。
+- [x] **Step 5:** 提交 `feat: port current FeatherHuBERT to Burn`。
 
 ## Task 5: SCRFD、GhostOne 关键点与均值脸后处理
 
