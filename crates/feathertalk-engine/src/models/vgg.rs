@@ -9,7 +9,7 @@ use burn::{
         ops::{ConvOptions, MaxPoolOptions},
     },
 };
-use feathertalk_core::Result;
+use feathertalk_core::{ModelIdentity, Result};
 use safetensors::{Dtype, SafeTensors};
 use std::{collections::BTreeMap, path::Path};
 #[derive(Module, Debug)]
@@ -20,18 +20,18 @@ struct FrozenConv {
 #[derive(Module, Debug)]
 pub struct VggFeatures {
     layers: Vec<FrozenConv>,
+    #[module(skip)]
+    identity: ModelIdentity,
 }
 impl VggFeatures {
+    /// Identity verified against the actual converted weight bytes at load.
+    pub fn identity(&self) -> &ModelIdentity {
+        &self.identity
+    }
     pub fn load(assets: &Path, device: &Device) -> Result<Self> {
         let a = VerifiedAssets::load(assets)?;
         let id = &a.manifest.identity;
-        if id.kind != "vgg19"
-            || id.architecture_version != "vgg19-source-v1"
-            || id.source_sha256
-                != "dcbb9e9dad569fff7a846263a77324fc34978fea2bfb039c012d710e1776ae44"
-        {
-            return Err(error("VGG identity mismatch"));
-        }
+        validate_identity(id)?;
         let c: serde_json::Value = serde_json::from_slice(
             a.files
                 .get("config.json")
@@ -102,7 +102,10 @@ impl VggFeatures {
         if !tensors.is_empty() {
             return Err(error("Unexpected VGG tensor keys"));
         }
-        Ok(Self { layers })
+        Ok(Self {
+            layers,
+            identity: a.manifest.identity,
+        })
     }
     pub fn forward(&self, images: Tensor<4>) -> Tensor<4> {
         self.forward_observed(images, |_, _| {})
@@ -130,4 +133,21 @@ impl VggFeatures {
         }
         x
     }
+}
+
+/// Checkpoint metadata validates the supported loss architecture and digest
+/// domain; actual bytes are verified by load, then compared at the step boundary.
+pub(crate) fn validate_identity(id: &ModelIdentity) -> Result<()> {
+    if id.kind != "vgg19"
+        || id.architecture_version != "vgg19-source-v1"
+        || id.source_sha256 != "dcbb9e9dad569fff7a846263a77324fc34978fea2bfb039c012d710e1776ae44"
+        || id.weights_sha256.len() != 64
+        || !id
+            .weights_sha256
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(error("Invalid VGG loss dependency identity"));
+    }
+    Ok(())
 }

@@ -72,6 +72,8 @@ pub struct TrainingMetadata {
     pub prepared_identity: String,
     pub prepared_manifest_sha256: String,
     pub architecture: String,
+    /// Frozen loss dependency. Pristine step0 may await selection.
+    pub vgg_identity: Option<ModelIdentity>,
     pub config: TrainConfig,
     pub batch_mode: BatchMode,
     pub requested_batch: u32,
@@ -200,7 +202,7 @@ impl TrainingState {
             Ok(FeatherTalk::new(&device.device.clone().autodiff()))
         })?;
         let metadata = TrainingMetadata {
-            schema_version: 1,
+            schema_version: 2,
             project_id: project.id,
             run_id: TrainingRunId::new(),
             source: project.source_video,
@@ -209,6 +211,7 @@ impl TrainingState {
             prepared_identity: pinned.identity.clone(),
             prepared_manifest_sha256: manifest_hash,
             architecture: "feathertalk-default-v1-447".into(),
+            vgg_identity: None,
             config: request.config.clone(),
             batch_mode: request.batch_mode,
             requested_batch: request.config.batch_size,

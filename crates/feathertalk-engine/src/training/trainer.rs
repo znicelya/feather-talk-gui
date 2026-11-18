@@ -41,6 +41,19 @@ pub fn complete_step(
 ) -> Result<StepOutcome> {
     crate::media::ffmpeg::check(cancel)?;
     state.validate_prepared(prepared)?;
+    match &state.metadata.vgg_identity {
+        Some(id) if id != vgg.identity() => {
+            return Err(invalid(
+                "VGG loss dependency differs from committed binding",
+            ));
+        }
+        None if state.metadata.global_step > 0 => {
+            return Err(invalid(
+                "Missing VGG loss dependency for committed training",
+            ));
+        }
+        _ => {}
+    }
     let d = device.device.clone().autodiff();
     if state.model.devices() != vec![d.clone()] || vgg.devices() != vec![d.clone()] {
         return Err(invalid(
@@ -60,6 +73,7 @@ pub fn complete_step(
     let backup = MaterializedSnapshot::capture(state)?;
     let mut candidate = backup.restore(state.project_directory(), device)?;
     drop(backup);
+    candidate.metadata.vgg_identity = Some(vgg.identity().clone());
     let mut sampler = PairSampler::restore(prepared, state.metadata.sampler.clone())?;
     if sampler.snapshot().cursor == sampler.snapshot().permutation.len() {
         sampler.advance_epoch()?;
@@ -216,6 +230,135 @@ mod tests {
             &state.optimizer_bytes().unwrap(),
         )
         .unwrap();
+        MaterializedSnapshot::capture(&state)
+            .unwrap()
+            .restore(&root, &device)
+            .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod loss_identity_tests {
+    use super::*;
+    use std::{fs, path::Path};
+    fn assets() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.artifacts/assets/vgg19")
+    }
+    fn alternate(root: &Path, device: &ExecutionDevice) -> VggFeatures {
+        let from = assets();
+        let to = root.join("alternate-vgg");
+        fs::create_dir(&to).unwrap();
+        fs::copy(from.join("config.json"), to.join("config.json")).unwrap();
+        let mut bytes = fs::read(from.join("model.safetensors")).unwrap();
+        let offset = 8 + u64::from_le_bytes(bytes[..8].try_into().unwrap()) as usize;
+        let value = f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+        bytes[offset..offset + 4].copy_from_slice(&(value + 0.125).to_le_bytes());
+        fs::write(to.join("model.safetensors"), &bytes).unwrap();
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(from.join("manifest.json")).unwrap()).unwrap();
+        let digest = super::super::checkpoint::digest(&bytes);
+        manifest["hashes"]["model.safetensors"] = digest.clone().into();
+        manifest["identity"]["weights_sha256"] = digest.into();
+        fs::write(
+            to.join("manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        VggFeatures::load(&to, &device.device.clone().autodiff()).unwrap()
+    }
+    #[test]
+    fn changed_verified_vgg_rejects_before_forward() {
+        let (root, prepared) = super::super::checkpoint_tests::fixture();
+        let device = super::super::checkpoint_tests::device();
+        let original = VggFeatures::load(&assets(), &device.device.clone().autodiff()).unwrap();
+        let changed = alternate(&root, &device);
+        assert_eq!(
+            original.identity().source_sha256,
+            changed.identity().source_sha256
+        );
+        assert_ne!(
+            original.identity().weights_sha256,
+            changed.identity().weights_sha256
+        );
+        let request = TrainRequest {
+            project_id: prepared.project_id,
+            batch_mode: BatchMode::Fixed,
+            config: TrainConfig {
+                batch_size: 1,
+                ..Default::default()
+            },
+            device: DevicePolicy::Auto,
+            resume: None,
+        };
+        let mut state = TrainingState::fresh(&request, &prepared, &device).unwrap();
+        state.metadata.vgg_identity = Some(original.identity().clone());
+        let before = state.metadata.clone();
+        let model = super::super::checkpoint::model_bytes(&state.model).unwrap();
+        let adam = state.optimizer_bytes().unwrap();
+        FAIL_AFTER_FORWARD.with(|flag| flag.set(true));
+        let err = complete_step(
+            &mut state,
+            &prepared,
+            &changed,
+            &device,
+            &Cancellation::new(),
+        )
+        .err()
+        .unwrap();
+        let did_not_forward = FAIL_AFTER_FORWARD.with(|flag| flag.replace(false));
+        assert!(
+            did_not_forward,
+            "Changed verified VGG reached model forward: {}",
+            err.message
+        );
+        assert!(err.message.contains("VGG loss dependency"));
+        assert_eq!(state.metadata, before);
+        super::super::checkpoint_validation::equal_pack(
+            &model,
+            &super::super::checkpoint::model_bytes(&state.model).unwrap(),
+        )
+        .unwrap();
+        super::super::checkpoint_validation::equal_pack(&adam, &state.optimizer_bytes().unwrap())
+            .unwrap();
+        MaterializedSnapshot::capture(&state)
+            .unwrap()
+            .restore(&root, &device)
+            .unwrap();
+        // A valid committed Adam/model state cannot drop or replace the loss pin.
+        super::super::checkpoint_tests::update(&mut state);
+        for pin in [Some(original.identity().clone()), None] {
+            state.metadata.vgg_identity = pin;
+            let before = state.metadata.clone();
+            let model = super::super::checkpoint::model_bytes(&state.model).unwrap();
+            let adam = state.optimizer_bytes().unwrap();
+            FAIL_AFTER_FORWARD.with(|flag| flag.set(true));
+            let err = complete_step(
+                &mut state,
+                &prepared,
+                &changed,
+                &device,
+                &Cancellation::new(),
+            )
+            .err()
+            .unwrap();
+            assert!(
+                FAIL_AFTER_FORWARD.with(|flag| flag.replace(false)),
+                "Nonpristine mismatch reached forward"
+            );
+            assert!(err.message.contains("VGG loss dependency"));
+            assert_eq!(state.metadata, before);
+            super::super::checkpoint_validation::equal_pack(
+                &model,
+                &super::super::checkpoint::model_bytes(&state.model).unwrap(),
+            )
+            .unwrap();
+            super::super::checkpoint_validation::equal_pack(
+                &adam,
+                &state.optimizer_bytes().unwrap(),
+            )
+            .unwrap();
+        }
+        state.metadata.vgg_identity = Some(original.identity().clone());
         MaterializedSnapshot::capture(&state)
             .unwrap()
             .restore(&root, &device)

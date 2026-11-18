@@ -97,7 +97,17 @@ pub(super) fn device() -> crate::ExecutionDevice {
     })
     .unwrap()
 }
-fn update(state: &mut TrainingState) {
+pub(super) fn update(state: &mut TrainingState) {
+    // Scalar-gradient state protocol still pins the real verified loss package;
+    // this does not turn the protocol objective into a six-loss training claim.
+    if state.metadata.vgg_identity.is_none() {
+        let vgg = crate::models::vgg::VggFeatures::load(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.artifacts/assets/vgg19"),
+            &state.model.devices()[0],
+        )
+        .unwrap();
+        state.metadata.vgg_identity = Some(vgg.identity().clone());
+    }
     struct Objective(Option<Tensor<1>>);
     impl ModuleVisitor for Objective {
         fn visit_float<const D: usize>(&mut self, p: &Param<Tensor<D>>) {
@@ -423,4 +433,87 @@ fn learning_rate_validation_preserves_restorable_state() {
     super::checkpoint_validation::equal_pack(&before_model, &model_bytes(&restored.model).unwrap())
         .unwrap();
     assert_eq!(restored.optimizer_bytes().unwrap(), before_optimizer);
+}
+
+#[test]
+fn vgg_binding_snapshot_and_checkpoint_contract() {
+    let device = device();
+    let (root, prepared) = fixture();
+    let request = TrainRequest {
+        project_id: prepared.project_id,
+        batch_mode: BatchMode::Fixed,
+        config: TrainConfig {
+            batch_size: 1,
+            ..Default::default()
+        },
+        device: DevicePolicy::Auto,
+        resume: None,
+    };
+    let mut state = TrainingState::fresh(&request, &prepared, &device).unwrap();
+    assert_eq!(state.metadata.schema_version, 2);
+    assert!(state.metadata.vgg_identity.is_none());
+    let pristine = MaterializedSnapshot::capture(&state)
+        .unwrap()
+        .restore(&root, &device)
+        .unwrap();
+    assert!(pristine.metadata.vgg_identity.is_none());
+    update(&mut state);
+    let pin = state.metadata.vgg_identity.clone().unwrap();
+    let model = model_bytes(&state.model).unwrap();
+    let adam = state.optimizer_bytes().unwrap();
+    let reference = save_checkpoint(&state, &root.join("checkpoints/vgg-bound")).unwrap();
+    let loaded = load_checkpoint(&root, &reference, &device).unwrap();
+    assert_eq!(loaded.metadata, state.metadata);
+    super::checkpoint_validation::equal_pack(&model, &model_bytes(&loaded.model).unwrap()).unwrap();
+    super::checkpoint_validation::equal_pack(&adam, &loaded.optimizer_bytes().unwrap()).unwrap();
+    state.metadata.vgg_identity = None;
+    assert!(MaterializedSnapshot::capture(&state).is_err());
+    state.metadata.vgg_identity = Some(pin.clone());
+    let snapshot = MaterializedSnapshot::capture(&state).unwrap();
+    let private = root.join("private-vgg");
+    snapshot.write_private(&private).unwrap();
+    let manifest_path = private.join("manifest.json");
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    for field in [
+        "missing",
+        "kind",
+        "architecture_version",
+        "source_sha256",
+        "weights_sha256",
+        "old-schema",
+    ] {
+        let mut changed = manifest.clone();
+        match field {
+            "missing" => changed["metadata"]["vgg_identity"] = serde_json::Value::Null,
+            "old-schema" => changed["metadata"]["schema_version"] = 1.into(),
+            _ => changed["metadata"]["vgg_identity"][field] = "invalid".into(),
+        }
+        fs::write(&manifest_path, serde_json::to_vec(&changed).unwrap()).unwrap();
+        assert!(
+            MaterializedSnapshot::read_private(&private)
+                .unwrap()
+                .restore(&root, &device)
+                .is_err(),
+            "accepted {field}"
+        );
+        if field != "missing" && field != "old-schema" {
+            let mut invalid = serde_json::to_value(&pin).unwrap();
+            invalid[field] = "invalid".into();
+            state.metadata.vgg_identity = Some(serde_json::from_value(invalid).unwrap());
+            assert!(
+                MaterializedSnapshot::capture(&state).is_err(),
+                "capture accepted {field}"
+            );
+        }
+    }
+    state.metadata.vgg_identity = Some(pin);
+    assert_eq!(
+        MaterializedSnapshot::capture(&state)
+            .unwrap()
+            .restore(&root, &device)
+            .unwrap()
+            .metadata,
+        state.metadata
+    );
 }

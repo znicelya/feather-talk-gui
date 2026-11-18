@@ -46,7 +46,16 @@ fn contained(root: &Path, relative: &Path) -> Result<PathBuf> {
 }
 pub(super) fn validate_metadata(root: &Path, m: &TrainingMetadata) -> Result<()> {
     super::state::validate_adam_config(&m.config)?;
-    if m.schema_version != 1
+    match &m.vgg_identity {
+        Some(id) => crate::models::vgg::validate_identity(id)?,
+        None if m.global_step > 0 => {
+            return Err(invalid(
+                "Missing VGG loss dependency for committed training",
+            ));
+        }
+        None => {}
+    }
+    if m.schema_version != 2
         || m.architecture != "feathertalk-default-v1-447"
         || m.seed_policy.version != 1
         || m.seed_policy.base_seed != m.config.seed

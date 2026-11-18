@@ -62,8 +62,10 @@ fn full_objective_commits_decreases_and_exactly_resumes() {
             self.0.push(p.val().to_data().try_to_vec::<f32>().unwrap());
         }
     }
+    assert!(state.metadata.vgg_identity.is_none());
     let mut before = Frozen(vec![]);
     vgg.visit(&mut before);
+    assert_eq!(before.0.len(), 14);
     let pristine = model(&state, &root, "pristine");
     let initial = state.metadata.clone();
     let cancelled = Cancellation::new();
@@ -79,6 +81,7 @@ fn full_objective_commits_decreases_and_exactly_resumes() {
     let first = complete_step(&mut state, &prepared, &vgg, &device, &Cancellation::new()).unwrap();
     let first_loss = first.losses.to_scalars();
     first_loss.validate().unwrap();
+    assert_eq!(state.metadata.vgg_identity.as_ref(), Some(vgg.identity()));
     assert_eq!(state.metadata.global_step, 1);
     assert_eq!(state.metadata.epoch, 1);
     assert_eq!(first.pairs, vec![[0, 1]]);
@@ -92,6 +95,7 @@ fn full_objective_commits_decreases_and_exactly_resumes() {
     );
     let saved = save_checkpoint(&state, &root.join("checkpoints/first")).unwrap();
     let mut resumed = load_checkpoint(&root, &saved, &device).unwrap();
+    assert_eq!(resumed.metadata.vgg_identity.as_ref(), Some(vgg.identity()));
     eprintln!("Starting second complete objective step");
     let second = complete_step(&mut state, &prepared, &vgg, &device, &Cancellation::new()).unwrap();
     let loss = second.losses.to_scalars();
