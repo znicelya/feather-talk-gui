@@ -12,6 +12,12 @@ enum Incoming {
     Event(WorkerEvent),
     End(Option<AppError>),
 }
+#[derive(Debug)]
+pub enum HostPoll {
+    Event(WorkerEvent),
+    Timeout,
+    Ended,
+}
 pub struct WorkerHost {
     child: Child,
     input: Option<ChildStdin>,
@@ -29,6 +35,7 @@ pub struct WorkerHost {
     started: bool,
     job: Option<JobKind>,
     project: Option<ProjectId>,
+    destination: Option<std::path::PathBuf>,
 }
 impl WorkerHost {
     pub fn spawn(component: &Path, context: WorkerContext) -> Result<Self> {
@@ -140,6 +147,7 @@ impl WorkerHost {
             started: false,
             job: None,
             project: None,
+            destination: None,
         };
         host.send(&WorkerBootstrap {
             protocol_version: PROTOCOL_VERSION,
@@ -165,7 +173,7 @@ impl WorkerHost {
             .and_then(|_| input.flush())
             .map_err(protocol_error)
     }
-    pub fn start(&mut self, task_id: TaskId, job: JobSpec) -> Result<()> {
+    pub fn start(&mut self, task_id: TaskId, mut job: JobSpec) -> Result<()> {
         if self.active.is_some() {
             return Err(AppError::new(
                 ErrorCode::Busy,
@@ -179,6 +187,37 @@ impl WorkerHost {
         if self.used.contains(&task_id) {
             return Err(protocol_error("Task ID reused"));
         }
+        let destination = if let JobSpec::Generate(request) = &mut job {
+            if !request.audio_path.is_absolute() || !request.output_path.is_absolute() {
+                return Err(protocol_error(
+                    "Generation audio and destination must be absolute",
+                ));
+            }
+            request.audio_path =
+                std::fs::canonicalize(&request.audio_path).map_err(protocol_error)?;
+            if !request.audio_path.is_file() {
+                return Err(protocol_error("Audio must be a regular file"));
+            }
+            let name = request
+                .output_path
+                .file_name()
+                .ok_or_else(|| protocol_error("Missing output filename"))?;
+            let parent = request
+                .output_path
+                .parent()
+                .ok_or_else(|| protocol_error("Missing output parent"))?;
+            request.output_path = std::fs::canonicalize(parent)
+                .map_err(protocol_error)?
+                .join(name);
+            if std::fs::symlink_metadata(&request.output_path)
+                .is_ok_and(|m| !m.is_file() || m.file_type().is_symlink())
+            {
+                return Err(protocol_error("Output must be a regular file destination"));
+            }
+            Some(request.output_path.clone())
+        } else {
+            None
+        };
         let (kind, project) = match &job {
             JobSpec::Train(r) => (JobKind::Train, r.project_id),
             JobSpec::Generate(r) => (JobKind::Generate, r.project_id),
@@ -187,6 +226,7 @@ impl WorkerHost {
         self.started = false;
         self.job = Some(kind);
         self.project = Some(project);
+        self.destination = destination;
         self.active = Some(task_id);
         self.used.insert(task_id);
         self.stage = "starting".into();
@@ -199,16 +239,13 @@ impl WorkerHost {
         }
         self.send(&WorkerRequest::Cancel { task_id })
     }
-    pub fn next_event(&mut self) -> Result<Option<WorkerEvent>> {
+    pub fn next_event(&mut self, timeout: std::time::Duration) -> Result<HostPoll> {
         if self.ended {
-            return Ok(None);
+            return Ok(HostPoll::Ended);
         }
-        let incoming = if self.ready {
-            self.incoming.recv().map_err(|e| e.to_string())
-        } else {
-            self.incoming
-                .recv_timeout(std::time::Duration::from_secs(300))
-                .map_err(|e| e.to_string())
+        let incoming = match self.incoming.recv_timeout(timeout) {
+            Err(mpsc::RecvTimeoutError::Timeout) => return Ok(HostPoll::Timeout),
+            result => result.map_err(|e| e.to_string()),
         };
         match incoming {
             Ok(Incoming::Event(event)) => {
@@ -248,6 +285,15 @@ impl WorkerHost {
                             } if total.is_some_and(|n| *completed > n) => {
                                 return self.fail(Some(protocol_error("Invalid progress counts")));
                             }
+                            EventPayload::Metrics(_)
+                            | EventPayload::CheckpointCommitted { .. }
+                            | EventPayload::Cancelled {
+                                checkpoint: Some(_),
+                            } if self.job != Some(JobKind::Train) => {
+                                return self.fail(Some(protocol_error(
+                                    "Training-only event on generation task",
+                                )));
+                            }
                             EventPayload::Metrics(m) if Some(m.project_id) != self.project => {
                                 return self.fail(Some(protocol_error("Foreign project metrics")));
                             }
@@ -272,8 +318,10 @@ impl WorkerHost {
                                     .fail(Some(protocol_error("Unexpected completed model")));
                             }
                             EventPayload::Completed {
-                                result: ArtifactResult::Video(_),
-                            } if self.job != Some(JobKind::Generate) => {
+                                result: ArtifactResult::Video(result),
+                            } if self.job != Some(JobKind::Generate)
+                                || self.destination.as_ref() != Some(&result.output_path) =>
+                            {
                                 return self
                                     .fail(Some(protocol_error("Unexpected completed video")));
                             }
@@ -288,13 +336,13 @@ impl WorkerHost {
                         }
                     }
                 }
-                Ok(Some(event))
+                Ok(HostPoll::Event(event))
             }
             Ok(Incoming::End(error)) => self.fail(error),
             Err(e) => self.fail(Some(protocol_error(e))),
         }
     }
-    fn fail(&mut self, cause: Option<AppError>) -> Result<Option<WorkerEvent>> {
+    fn fail(&mut self, cause: Option<AppError>) -> Result<HostPoll> {
         self.input.take();
         self.containment.take();
         let _ = self.child.kill();
@@ -323,12 +371,13 @@ impl WorkerHost {
         if let Some(task) = self.active.take() {
             let seq = self.seq.unwrap_or(0) + 1;
             self.seq = Some(seq);
-            return WorkerEvent::new(Some(task), seq, EventPayload::Failed { error }).map(Some);
+            return WorkerEvent::new(Some(task), seq, EventPayload::Failed { error })
+                .map(HostPoll::Event);
         }
         if protocol_failure || !self.ready || !status.success() {
             Err(error)
         } else {
-            Ok(None)
+            Ok(HostPoll::Ended)
         }
     }
     /// Forced termination reports only previously committed references via the subsequent failure event.

@@ -1,11 +1,9 @@
 use feathertalk_core::*;
-use feathertalk_worker::runtime::EventOwner;
 use serde::Serialize;
 use std::sync::mpsc;
 #[test]
 fn second_heavy_job_rejected() {
-    let (tx, rx) = feathertalk_worker::runtime::event_channel();
-    let owner = EventOwner::new(tx);
+    let (owner, rx) = feathertalk_worker::runtime::event_channel();
     let a = TaskId::new();
     owner.start(a, JobKind::Train).unwrap();
     assert_eq!(
@@ -22,8 +20,7 @@ fn second_heavy_job_rejected() {
 }
 #[test]
 fn stale_or_wrong_task_event_rejected() {
-    let (tx, rx) = feathertalk_worker::runtime::event_channel();
-    let owner = EventOwner::new(tx);
+    let (owner, rx) = feathertalk_worker::runtime::event_channel();
     let a = TaskId::new();
     let b = TaskId::new();
     owner.start(a, JobKind::Train).unwrap();
@@ -57,6 +54,7 @@ struct Process {
     events: std::sync::mpsc::Receiver<WorkerEvent>,
     _root: tempfile::TempDir,
     project: ProjectId,
+    _paused_output: Option<std::process::ChildStdout>,
 }
 impl Drop for Process {
     fn drop(&mut self) {
@@ -69,6 +67,9 @@ impl Process {
         Self::with_context(|_| {})
     }
     fn with_context(change: impl FnOnce(&mut WorkerContext)) -> Self {
+        Self::with_output(change, true)
+    }
+    fn with_output(change: impl FnOnce(&mut WorkerContext), drain: bool) -> Self {
         use sha2::{Digest, Sha256};
         use std::{
             fs,
@@ -147,21 +148,27 @@ impl Process {
         let input = child.stdin.take().unwrap();
         let output = child.stdout.take().unwrap();
         let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let mut reader = BufReader::new(output);
-            while let Ok(Some(bytes)) = read_frame(&mut reader) {
-                let event = serde_json::from_slice(&bytes).unwrap();
-                if tx.send(event).is_err() {
-                    break;
+        let paused = if drain {
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(output);
+                while let Ok(Some(bytes)) = read_frame(&mut reader) {
+                    let event = serde_json::from_slice(&bytes).unwrap();
+                    if tx.send(event).is_err() {
+                        break;
+                    }
                 }
-            }
-        });
+            });
+            None
+        } else {
+            Some(output)
+        };
         let mut p = Self {
             child,
             input,
             events: rx,
             _root: root,
             project,
+            _paused_output: paused,
         };
         p.write(&WorkerBootstrap {
             protocol_version: PROTOCOL_VERSION,
@@ -348,5 +355,52 @@ fn bootstrap_rejects_wrong_identity_target_hash_and_unbound_probe() {
                 .is_err()
         );
         assert!(!p.child.wait().unwrap().success());
+    }
+}
+
+#[test]
+fn relative_generation_paths_are_owned_failures() {
+    for relative_audio in [true, false] {
+        let mut p = Process::new();
+        p.write(&WorkerRequest::Hello {
+            protocol_version: 1,
+        });
+        p.next();
+        let task = TaskId::new();
+        let job = JobSpec::Generate(GenerateRequest {
+            project_id: p.project,
+            audio_path: if relative_audio { "relative.wav".into() } else { p._root.path().join("source.bin") },
+            output_path: if relative_audio { p._root.path().join("out.mp4") } else { "relative.mp4".into() },
+            model_ref: serde_json::from_value(serde_json::json!({"project_id":p.project,"run_id":TrainingRunId::new(),"checkpoint_id":"fixture"})).unwrap(),
+            device: DevicePolicy::Auto,
+        });
+        p.write(&WorkerRequest::Start { task_id: task, job });
+        assert!(matches!(p.next().payload, EventPayload::Started { .. }));
+        let EventPayload::Failed { error } = p.next().payload else {
+            panic!("expected path failure")
+        };
+        assert!(error.message.contains("absolute"), "{error:?}");
+    }
+}
+
+#[test]
+fn stalled_output_control_overload_exits_with_idle_stdin() {
+    use std::io::Write;
+    let mut p = Process::with_output(|_| {}, false);
+    // Never drain stdout. Repeated rejected controls exhaust the bounded reserve.
+    let records = b"{\"type\":\"hello\",\"protocol_version\":99}\n".repeat(1024);
+    let _ = p.input.write_all(&records);
+    let _ = p.input.flush();
+    let start = std::time::Instant::now();
+    loop {
+        if let Some(status) = p.child.try_wait().unwrap() {
+            assert!(!status.success());
+            break;
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(10),
+            "control overload must exit without another record"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }

@@ -1,4 +1,12 @@
-use feather_talk_gui_lib::worker_host::WorkerHost;
+use feather_talk_gui_lib::worker_host::{HostPoll, WorkerHost};
+use std::time::Duration;
+fn next(host: &mut WorkerHost) -> Result<Option<WorkerEvent>> {
+    match host.next_event(Duration::from_secs(10))? {
+        HostPoll::Event(event) => Ok(Some(event)),
+        HostPoll::Ended => Ok(None),
+        HostPoll::Timeout => panic!("unexpected fixture timeout"),
+    }
+}
 use feathertalk_core::*;
 /// Actual worker/context supplied by the recorded local resource integration run.
 #[test]
@@ -14,7 +22,7 @@ fn hello_and_crash_preserves_gui_error_context() {
     let project = context.projects[0].project_id;
     let mut host = WorkerHost::spawn(&binary, context).unwrap();
     assert!(matches!(
-        host.next_event().unwrap().unwrap().payload,
+        next(&mut host).unwrap().unwrap().payload,
         EventPayload::Ready { .. }
     ));
     let task = TaskId::new();
@@ -45,12 +53,12 @@ fn hello_and_crash_preserves_gui_error_context() {
         ErrorCode::Busy
     );
     assert!(matches!(
-        host.next_event().unwrap().unwrap().payload,
+        next(&mut host).unwrap().unwrap().payload,
         EventPayload::Started { .. }
     ));
     let _ = host.terminate();
     let mut terminal = 0;
-    while let Some(event) = host.next_event().unwrap() {
+    while let Some(event) = next(&mut host).unwrap() {
         if let EventPayload::Failed { error } = event.payload {
             terminal += 1;
             assert_eq!(event.task_id, Some(task));
@@ -106,6 +114,12 @@ fn crash_stderr_control_error_and_late_events() {
         "control-error",
         "pre-start-control",
         "flood-drop",
+        "quiet-cancel",
+        "gen-metrics",
+        "gen-checkpoint",
+        "gen-cancel-checkpoint",
+        "gen-wrong-output",
+        "gen-valid-output",
     ] {
         let project = ProjectId::new();
         let path = root.path().join(mode);
@@ -128,34 +142,133 @@ fn crash_stderr_control_error_and_late_events() {
             probe_runner: binary.clone(),
             cuda_root: None,
         };
+        let model = ModelRef {
+            project_id: project,
+            run_id: TrainingRunId::new(),
+            checkpoint_id: "fixture".into(),
+        };
+        let output = root.path().canonicalize().unwrap().join("chosen.mp4");
+        let device = DeviceDescriptor {
+            id: "cpu".into(),
+            name: "fixture".into(),
+            backend: BackendKind::Cpu,
+            vendor: None,
+            driver: None,
+            memory_bytes: None,
+        };
+        let payload = match mode {
+            "gen-metrics" => Some(EventPayload::Metrics(TrainingMetrics {
+                project_id: project,
+                run_id: model.run_id,
+                step: 1,
+                epoch: 1,
+                elapsed_ms: 1,
+                lr: 0.001,
+                losses: LossScalars {
+                    full: 0.,
+                    mouth: 0.,
+                    temporal: 0.,
+                    temporal_mouth: 0.,
+                    perceptual: 0.,
+                    mouth_gradient: 0.,
+                    total: 0.,
+                },
+                device: device.clone(),
+                precision: Precision::F32,
+                batch_size: 1,
+            })),
+            "gen-checkpoint" => Some(EventPayload::CheckpointCommitted {
+                model_ref: model.clone(),
+            }),
+            "gen-cancel-checkpoint" => Some(EventPayload::Cancelled {
+                checkpoint: Some(model.clone()),
+            }),
+            "gen-wrong-output" | "gen-valid-output" => Some(EventPayload::Completed {
+                result: ArtifactResult::Video(ExportResult {
+                    output_path: if mode == "gen-valid-output" {
+                        output.clone()
+                    } else {
+                        root.path().join("unrelated.mp4")
+                    },
+                    video_frames: 1,
+                    elapsed_ms: 1,
+                    device,
+                }),
+            }),
+            _ => None,
+        };
+        if let Some(payload) = payload {
+            fs::write(
+                root.path().join(format!("{mode}.json")),
+                serde_json::to_vec(&payload).unwrap(),
+            )
+            .unwrap();
+        }
         let mut host = WorkerHost::spawn(&binary.canonicalize().unwrap(), context).unwrap();
         assert!(matches!(
-            host.next_event().unwrap().unwrap().payload,
+            next(&mut host).unwrap().unwrap().payload,
             EventPayload::Ready { .. }
         ));
         let task = TaskId::new();
-        host.start(
-            task,
+        let job = if mode.starts_with("gen-") {
+            JobSpec::Generate(GenerateRequest {
+                project_id: project,
+                audio_path: binary.clone(),
+                output_path: output,
+                model_ref: model,
+                device: DevicePolicy::Auto,
+            })
+        } else {
             JobSpec::Train(TrainRequest {
                 project_id: project,
                 batch_mode: BatchMode::Fixed,
                 config: TrainConfig::default(),
                 device: DevicePolicy::Auto,
                 resume: None,
-            }),
-        )
-        .unwrap();
+            })
+        };
+        host.start(task, job).unwrap();
         if mode == "pre-start-control" {
-            assert_eq!(host.next_event().unwrap_err().code, ErrorCode::Busy);
+            assert_eq!(next(&mut host).unwrap_err().code, ErrorCode::Busy);
         }
         assert!(matches!(
-            host.next_event().unwrap().unwrap().payload,
+            next(&mut host).unwrap().unwrap().payload,
             EventPayload::Started { .. }
         ));
         assert!(matches!(
-            host.next_event().unwrap().unwrap().payload,
+            next(&mut host).unwrap().unwrap().payload,
             EventPayload::Progress { .. }
         ));
+        if mode.starts_with("gen-") {
+            let event = next(&mut host).unwrap().unwrap();
+            if mode == "gen-valid-output" {
+                assert!(matches!(event.payload, EventPayload::Completed { .. }));
+            } else {
+                let EventPayload::Failed { error } = event.payload else {
+                    panic!("generation accepted incompatible payload")
+                };
+                assert_eq!(error.code, ErrorCode::Protocol);
+                assert!(
+                    error
+                        .evidence
+                        .iter()
+                        .any(|e| e.contains("committed_checkpoint=None"))
+                );
+            }
+            continue;
+        }
+        if mode == "quiet-cancel" {
+            assert!(matches!(
+                host.next_event(Duration::from_millis(30)).unwrap(),
+                HostPoll::Timeout
+            ));
+            host.cancel(task).unwrap();
+            assert!(matches!(
+                next(&mut host).unwrap().unwrap().payload,
+                EventPayload::Cancelled { .. }
+            ));
+            continue;
+        }
         if mode == "flood-drop" {
             std::thread::sleep(std::time::Duration::from_millis(100));
             let (done, finished) = std::sync::mpsc::channel();
@@ -169,15 +282,15 @@ fn crash_stderr_control_error_and_late_events() {
             continue;
         }
         if mode == "control-error" {
-            assert_eq!(host.next_event().unwrap_err().code, ErrorCode::Protocol);
+            assert_eq!(next(&mut host).unwrap_err().code, ErrorCode::Protocol);
             assert!(matches!(
-                host.next_event().unwrap().unwrap().payload,
+                next(&mut host).unwrap().unwrap().payload,
                 EventPayload::Cancelled { .. }
             ));
-            assert_eq!(host.next_event().unwrap_err().code, ErrorCode::Protocol);
-            assert!(host.next_event().unwrap().is_none());
+            assert_eq!(next(&mut host).unwrap_err().code, ErrorCode::Protocol);
+            assert!(next(&mut host).unwrap().is_none());
         } else {
-            let e = host.next_event().unwrap().unwrap();
+            let e = next(&mut host).unwrap().unwrap();
             assert_eq!(e.task_id, Some(task));
             let EventPayload::Failed { error } = e.payload else {
                 panic!("Expected owned failure")
@@ -196,7 +309,7 @@ fn crash_stderr_control_error_and_late_events() {
             );
             assert!(error.evidence.iter().all(|e| e.len() < 66000));
             assert_ne!(error.code, ErrorCode::OutOfMemory);
-            assert!(host.next_event().unwrap().is_none());
+            assert!(next(&mut host).unwrap().is_none());
         }
     }
 }

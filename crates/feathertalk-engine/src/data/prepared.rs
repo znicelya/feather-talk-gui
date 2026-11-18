@@ -1085,13 +1085,32 @@ mod task10_finalization_regression {
 }
 
 fn acquire_prepare_lock(path: &Path) -> Result<fs::File> {
-    let file = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path)
-        .map_err(invalid)?;
+    // Open the leaf itself: never follow a legacy symlink, including a dangling one.
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(0x00200000); // FILE_FLAG_OPEN_REPARSE_POINT
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(path).map_err(invalid)?;
+    let metadata = file.metadata().map_err(invalid)?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes() & 0x400 != 0 {
+            // FILE_ATTRIBUTE_REPARSE_POINT
+            return Err(invalid("Preparation lock cannot be a reparse point"));
+        }
+    }
+    if !metadata.is_file() {
+        return Err(invalid("Preparation lock must be a regular file"));
+    }
     fs2::FileExt::try_lock_exclusive(&file).map_err(|e| {
         AppError::new(
             ErrorCode::Busy,
@@ -1141,6 +1160,32 @@ mod task12_lock_tests {
             fs::write(path.with_extension("ready"), b"ready").unwrap();
             std::thread::sleep(std::time::Duration::from_secs(30));
         }
+    }
+    #[test]
+    fn linked_sentinel_is_rejected_without_touching_target() {
+        let root = std::env::temp_dir().join(format!("lock-links-{}", ProjectId::new()));
+        fs::create_dir(&root).unwrap();
+        for exists in [true, false] {
+            let target = root.join(if exists { "existing" } else { "missing" });
+            if exists {
+                fs::write(&target, b"outside").unwrap();
+            }
+            let link = root.join("prepare.lock");
+            #[cfg(windows)]
+            std::os::windows::fs::symlink_file(&target, &link).unwrap();
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            assert!(
+                acquire_prepare_lock(&link).is_err(),
+                "must reject linked lock leaf"
+            );
+            assert_eq!(target.exists(), exists);
+            if exists {
+                assert_eq!(fs::read(&target).unwrap(), b"outside");
+            }
+            fs::remove_file(link).unwrap();
+        }
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn stale_file_is_not_ownership() {

@@ -8,9 +8,17 @@ fn main(){
  if context.contains("pre-start-control") {
   event(1,"null",&format!(r#"{{"type":"request_rejected","request":"start","requested_task_id":{task},"error":{{"code":"busy","stage":"control","message":"busy","evidence":[],"actions":[],"log_path":null}}}}"#));
  }
- event(2,&task,r#"{"type":"started","job":"train"}"#);
+ if context.contains("gen-") { event(2,&task,r#"{"type":"started","job":"generate"}"#); }
+ else { event(2,&task,r#"{"type":"started","job":"train"}"#); }
  event(3,&task,r#"{"type":"progress","stage":"fixture-compute","completed":1,"total":null}"#);
- if context.contains("flood-drop") {
+ if context.contains("gen-") {
+  for mode in ["gen-metrics", "gen-checkpoint", "gen-cancel-checkpoint", "gen-wrong-output", "gen-valid-output"] {
+   if context.contains(mode) { let payload = std::fs::read_to_string(std::env::current_exe().unwrap().parent().unwrap().join(format!("{mode}.json"))).unwrap(); event(4,&task,&payload); }
+  }
+ }else if context.contains("quiet-cancel") {
+  let cancel = lines.next().unwrap().unwrap(); assert!(cancel.contains("cancel"));
+  event(4,&task,r#"{"type":"cancelled","checkpoint":null}"#);
+ }else if context.contains("flood-drop") {
   for seq in 4..10000 { event(seq,&task,r#"{"type":"progress","stage":"flood","completed":0,"total":null}"#); }
  }else if context.contains("control-error"){
   event(4,"null",r#"{"type":"request_rejected","request":"cancel","requested_task_id":"00000000-0000-4000-8000-000000000001","error":{"code":"protocol","stage":"control","message":"stale cancel","evidence":[],"actions":[],"log_path":null}}"#);

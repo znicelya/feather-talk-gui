@@ -149,3 +149,30 @@ pub(crate) fn validate_context(c: &WorkerContext) -> Result<()> {
     }
     Ok(())
 }
+
+pub(crate) fn normalize_generation(request: &mut GenerateRequest) -> Result<()> {
+    if !request.audio_path.is_absolute() || !request.output_path.is_absolute() {
+        return Err(protocol_error(
+            "Generation audio and destination must be absolute",
+        ));
+    }
+    request.audio_path = fs::canonicalize(&request.audio_path).map_err(protocol_error)?;
+    if !request.audio_path.is_file() {
+        return Err(protocol_error("Audio must be a regular file"));
+    }
+    let name = request
+        .output_path
+        .file_name()
+        .ok_or_else(|| protocol_error("Missing output filename"))?;
+    let parent = request
+        .output_path
+        .parent()
+        .ok_or_else(|| protocol_error("Missing output parent"))?;
+    request.output_path = fs::canonicalize(parent).map_err(protocol_error)?.join(name);
+    if fs::symlink_metadata(&request.output_path)
+        .is_ok_and(|m| !m.is_file() || m.file_type().is_symlink())
+    {
+        return Err(protocol_error("Output must be a regular file destination"));
+    }
+    Ok(())
+}

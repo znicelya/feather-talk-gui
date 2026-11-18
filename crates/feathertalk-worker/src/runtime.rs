@@ -1,4 +1,6 @@
 use crate::context::validate_context;
+use crate::outbox::terminal;
+pub use crate::outbox::{EventOwner, event_channel};
 use feathertalk_core::*;
 use feathertalk_engine::{
     self as engine,
@@ -8,110 +10,7 @@ use feathertalk_engine::{
         lifecycle::{StoppingReason, train},
     },
 };
-use std::{
-    collections::HashSet,
-    fs,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-        mpsc::SyncSender,
-    },
-    thread::JoinHandle,
-    time::{Duration, Instant},
-};
-struct State {
-    seq: u64,
-    active: Option<TaskId>,
-    used: HashSet<TaskId>,
-    output: SyncSender<WorkerEvent>,
-    metrics: Option<Instant>,
-}
-#[derive(Clone)]
-pub struct EventOwner(Arc<Mutex<State>>, Arc<AtomicBool>);
-fn terminal(p: &EventPayload) -> bool {
-    matches!(
-        p,
-        EventPayload::Completed { .. }
-            | EventPayload::Cancelled { .. }
-            | EventPayload::Failed { .. }
-    )
-}
-impl State {
-    fn send(&mut self, task: Option<TaskId>, payload: EventPayload) -> Result<()> {
-        let event = WorkerEvent::new(task, self.seq, payload)?;
-        self.seq = self
-            .seq
-            .checked_add(1)
-            .ok_or_else(|| protocol_error("Sequence exhausted"))?;
-        self.output.send(event).map_err(protocol_error)
-    }
-}
-impl EventOwner {
-    pub fn new(output: SyncSender<WorkerEvent>) -> Self {
-        Self(
-            Arc::new(Mutex::new(State {
-                seq: 0,
-                active: None,
-                used: HashSet::new(),
-                output,
-                metrics: None,
-            })),
-            Arc::new(AtomicBool::new(false)),
-        )
-    }
-    pub fn start(&self, task: TaskId, kind: JobKind) -> Result<()> {
-        let mut s = self.0.lock().map_err(protocol_error)?;
-        if s.active.is_some() {
-            return Err(AppError::new(
-                ErrorCode::Busy,
-                "worker",
-                "A job is already running",
-            ));
-        }
-        if !s.used.insert(task) {
-            return Err(protocol_error("Task ID reused"));
-        }
-        s.active = Some(task);
-        self.1.store(true, Ordering::Release);
-        s.metrics = None;
-        s.send(Some(task), EventPayload::Started { job: kind })
-    }
-    pub fn emit(&self, task: TaskId, payload: EventPayload) -> Result<()> {
-        let mut s = self.0.lock().map_err(protocol_error)?;
-        if s.active != Some(task) {
-            return Err(protocol_error("Late or foreign task event"));
-        }
-        if matches!(
-            payload,
-            EventPayload::Ready { .. }
-                | EventPayload::RequestRejected { .. }
-                | EventPayload::Started { .. }
-        ) {
-            return Err(protocol_error("Invalid task callback"));
-        }
-        if matches!(payload, EventPayload::Metrics(_)) {
-            if s.metrics
-                .is_some_and(|t| t.elapsed() < Duration::from_millis(500))
-            {
-                return Ok(());
-            }
-            s.metrics = Some(Instant::now());
-        }
-        let final_event = terminal(&payload);
-        s.send(Some(task), payload)?;
-        if final_event {
-            s.active = None;
-            self.1.store(false, Ordering::Release);
-        }
-        Ok(())
-    }
-    fn active(&self) -> bool {
-        self.1.load(Ordering::Acquire)
-    }
-    fn control(&self, p: EventPayload) -> Result<()> {
-        self.0.lock().map_err(protocol_error)?.send(None, p)
-    }
-}
+use std::{fs, thread::JoinHandle};
 struct Observe {
     owner: EventOwner,
     task: TaskId,
@@ -132,11 +31,11 @@ pub struct WorkerRuntime {
     stopping: bool,
 }
 impl WorkerRuntime {
-    pub fn new(context: WorkerContext, output: SyncSender<WorkerEvent>) -> Result<Self> {
+    pub fn new(context: WorkerContext, owner: EventOwner) -> Result<Self> {
         validate_context(&context)?;
         Ok(Self {
             context,
-            owner: EventOwner::new(output),
+            owner,
             hello: false,
             current: None,
             stopping: false,
@@ -149,7 +48,11 @@ impl WorkerRuntime {
             .is_some_and(|(_, _, h)| h.is_finished() || !self.owner.active())
         {
             let (_, _, h) = self.current.take().unwrap();
-            let _ = h.join();
+            // A published terminal means heavy computation has ended. Do not wait for
+            // the old thread to be scheduled just to return from its final emit.
+            if h.is_finished() {
+                let _ = h.join();
+            }
         }
         let (kind, id) = match &request {
             WorkerRequest::Hello { .. } => (RequestKind::Hello, None),
@@ -275,6 +178,7 @@ impl WorkerRuntime {
 }
 impl Drop for WorkerRuntime {
     fn drop(&mut self) {
+        self.owner.close();
         self.finish();
     }
 }
@@ -284,6 +188,11 @@ fn execute(
     observer: &dyn TaskObserver,
     cancel: &Cancellation,
 ) -> Result<EventPayload> {
+    let mut normalized = job.clone();
+    if let JobSpec::Generate(request) = &mut normalized {
+        crate::context::normalize_generation(request)?;
+    }
+    let job = &normalized;
     let (id, policy) = match job {
         JobSpec::Train(r) => (r.project_id, &r.device),
         JobSpec::Generate(r) => (r.project_id, &r.device),
@@ -383,21 +292,30 @@ fn execute(
     }
 }
 
-/// Bounded worker output queue; shared by the binary and focused scheduling tests.
-pub fn event_channel() -> (
-    std::sync::mpsc::SyncSender<WorkerEvent>,
-    std::sync::mpsc::Receiver<WorkerEvent>,
-) {
-    std::sync::mpsc::sync_channel(64)
-}
-
 #[cfg(test)]
 mod backpressure_tests {
     use super::*;
+    use std::time::Duration;
+    fn fixture_context() -> WorkerContext {
+        WorkerContext {
+            protocol_version: 1,
+            projects: vec![],
+            components: vec![],
+            target: TargetPlatform {
+                os: "test".into(),
+                architecture: "test".into(),
+                backend: "cpu".into(),
+            },
+            assets: ".".into(),
+            ffmpeg: ".".into(),
+            ffprobe: ".".into(),
+            probe_runner: ".".into(),
+            cuda_root: None,
+        }
+    }
     #[test]
     fn stalled_output_keeps_cancel_responsive_and_terminal_lossless() {
-        let (tx, rx) = event_channel();
-        let owner = EventOwner::new(tx);
+        let (owner, rx) = event_channel();
         let task = TaskId::new();
         owner.start(task, JobKind::Train).unwrap();
         let cancel = Cancellation::new();
@@ -423,21 +341,7 @@ mod backpressure_tests {
                 .unwrap();
             done.send(()).unwrap();
         });
-        let context = WorkerContext {
-            protocol_version: 1,
-            projects: vec![],
-            components: vec![],
-            target: TargetPlatform {
-                os: "test".into(),
-                architecture: "test".into(),
-                backend: "cpu".into(),
-            },
-            assets: ".".into(),
-            ffmpeg: ".".into(),
-            ffprobe: ".".into(),
-            probe_runner: ".".into(),
-            cuda_root: None,
-        };
+        let context = fixture_context();
         let mut runtime = WorkerRuntime {
             context,
             owner,
@@ -447,10 +351,25 @@ mod backpressure_tests {
         };
         // Give the producer a full queue, with no stdout consumer.
         assert!(completed.recv_timeout(Duration::from_millis(100)).is_err());
-        runtime
-            .handle(WorkerRequest::Cancel { task_id: task })
-            .unwrap();
-        let events = (0..130)
+        let (control_done, control_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            assert!(
+                runtime
+                    .handle(WorkerRequest::Cancel {
+                        task_id: TaskId::new()
+                    })
+                    .is_err()
+            );
+            runtime
+                .handle(WorkerRequest::Cancel { task_id: task })
+                .unwrap();
+            runtime.handle(WorkerRequest::Shutdown).unwrap();
+            control_done.send(runtime).unwrap();
+        });
+        let mut runtime = control_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("invalid request must not strand subsequent cancel/shutdown");
+        let events = (0..131)
             .map(|_| rx.recv_timeout(Duration::from_secs(2)).unwrap())
             .collect::<Vec<_>>();
         completed.recv_timeout(Duration::from_secs(2)).unwrap();
@@ -461,5 +380,91 @@ mod backpressure_tests {
             EventPayload::Cancelled { .. }
         ));
         runtime.finish();
+    }
+    #[test]
+    fn terminal_allows_next_start_before_old_thread_returns() {
+        let (owner, rx) = event_channel();
+        let first = TaskId::new();
+        owner.start(first, JobKind::Train).unwrap();
+        let producer = owner.clone();
+        let (release, gate) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            producer
+                .emit(first, EventPayload::Cancelled { checkpoint: None })
+                .unwrap();
+            gate.recv().unwrap(); // Deliberately descheduled after terminal publication.
+        });
+        let mut runtime = WorkerRuntime {
+            context: fixture_context(),
+            owner,
+            hello: true,
+            current: Some((first, Cancellation::new(), thread)),
+            stopping: false,
+        };
+        rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_secs(1)).unwrap().payload,
+            EventPayload::Cancelled { .. }
+        ));
+        let (done, completed) = std::sync::mpsc::channel();
+        let second = TaskId::new();
+        std::thread::spawn(move || {
+            let result = runtime.handle(WorkerRequest::Start {
+                task_id: second,
+                job: JobSpec::Train(TrainRequest {
+                    project_id: ProjectId::new(),
+                    batch_mode: BatchMode::Fixed,
+                    config: TrainConfig::default(),
+                    device: DevicePolicy::Auto,
+                    resume: None,
+                }),
+            });
+            done.send((runtime, result)).unwrap();
+        });
+        let result = completed.recv_timeout(Duration::from_secs(1));
+        release.send(()).unwrap();
+        let (mut runtime, accepted) =
+            result.expect("next Start must not wait for old thread teardown");
+        accepted.unwrap();
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(1)).unwrap().task_id,
+            Some(second)
+        );
+        runtime.finish();
+    }
+    #[test]
+    fn forced_drop_wakes_blocked_producer_with_receiver_alive() {
+        let (owner, _receiver) = event_channel();
+        let task = TaskId::new();
+        owner.start(task, JobKind::Train).unwrap();
+        let producer = owner.clone();
+        let thread = std::thread::spawn(move || {
+            while producer
+                .emit(
+                    task,
+                    EventPayload::Progress {
+                        stage: "blocked".into(),
+                        completed: 0,
+                        total: None,
+                    },
+                )
+                .is_ok()
+            {}
+        });
+        let runtime = WorkerRuntime {
+            context: fixture_context(),
+            owner,
+            hello: true,
+            current: Some((task, Cancellation::new(), thread)),
+            stopping: false,
+        };
+        let (done, completed) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(runtime);
+            done.send(()).unwrap();
+        });
+        completed
+            .recv_timeout(Duration::from_secs(1))
+            .expect("forced Drop must wake senders");
     }
 }
