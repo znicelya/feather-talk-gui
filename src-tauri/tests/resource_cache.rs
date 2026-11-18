@@ -579,3 +579,128 @@ fn cached_symlink_escape_is_not_ready() {
     std::os::unix::fs::symlink(src.path().join("data"), &file).unwrap();
     assert!(!m.inventory(&target()).unwrap().ready);
 }
+
+/// A real nested strict AssetManifest, pinned by an independent bundle manifest.
+fn nested_bundle(
+    version: &str,
+    model_bytes: &[u8],
+) -> (tempfile::TempDir, Component, ModelIdentity) {
+    let (nested_dir, nested) = fixture("model-v1", model_bytes);
+    let (dir, mut bundle) = fixture(version, version.as_bytes());
+    fs::create_dir(dir.path().join("model")).unwrap();
+    let mut files = BTreeMap::from([(PathBuf::from("data"), version.as_bytes().to_vec())]);
+    for name in ["manifest.json", "data"] {
+        let bytes = fs::read(nested_dir.path().join(name)).unwrap();
+        let relative = PathBuf::from(format!("model/{name}"));
+        fs::write(dir.path().join(&relative), &bytes).unwrap();
+        files.insert(relative, bytes);
+    }
+    bundle.manifest.relative_files = files.keys().cloned().collect();
+    bundle.manifest.sizes = files
+        .iter()
+        .map(|(p, b)| (p.clone(), b.len() as u64))
+        .collect();
+    bundle.manifest.hashes = files.iter().map(|(p, b)| (p.clone(), hash(b))).collect();
+    let raw = serde_json::to_vec(&bundle.manifest).unwrap();
+    fs::write(dir.path().join("manifest.json"), &raw).unwrap();
+    bundle.manifest_sha256 = hash(&raw);
+    bundle.manifest_size = raw.len() as u64;
+    (dir, bundle, nested.manifest.identity)
+}
+
+fn assert_nested_lookup_skips_damage(damage: &str) {
+    let (first, a, _) = nested_bundle("01", b"unrelated");
+    let (second, b, wanted) = nested_bundle("02", b"wanted");
+    let root = tempfile::tempdir().unwrap();
+    let m = manager(root.path().into(), vec![a, b]);
+    m.import_local(&first.path().join("manifest.json")).unwrap();
+    m.import_local(&second.path().join("manifest.json"))
+        .unwrap();
+    // Generation names are sorted by the resolver: damaged 01 is visited before healthy 02.
+    if damage == "metadata" {
+        let path = root.path().join("test/01/.component.json");
+        let mut c: Component = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        c.manifest.relative_files.push("data".into());
+        fs::write(path, serde_json::to_vec(&c).unwrap()).unwrap();
+    } else {
+        fs::write(
+            root.path().join("test/01/model/manifest.json"),
+            b"damaged nested manifest",
+        )
+        .unwrap();
+    }
+    let expected = root.path().canonicalize().unwrap().join("test/02/model");
+    assert_eq!(
+        m.resolve_identity(&wanted, &target()).unwrap(),
+        expected,
+        "{damage}"
+    );
+}
+#[test]
+fn nested_lookup_skips_invalid_metadata() {
+    assert_nested_lookup_skips_damage("metadata");
+}
+#[test]
+fn nested_lookup_skips_unrelated_manifest_corruption() {
+    assert_nested_lookup_skips_damage("nested");
+}
+
+#[test]
+fn nested_lookup_skips_corrupt_matching_bundle_and_never_returns_unverified_match() {
+    let (first, a, _) = nested_bundle("01", b"unchanged model");
+    let (second, b, wanted) = nested_bundle("02", b"unchanged model");
+    let root = tempfile::tempdir().unwrap();
+    let m = manager(root.path().into(), vec![a, b]);
+    m.import_local(&first.path().join("manifest.json")).unwrap();
+    m.import_local(&second.path().join("manifest.json"))
+        .unwrap();
+    fs::write(root.path().join("test/01/data"), b"xx").unwrap();
+    let expected = root.path().canonicalize().unwrap().join("test/02/model");
+    assert_eq!(m.resolve_identity(&wanted, &target()).unwrap(), expected);
+    fs::write(root.path().join("test/02/data"), b"yy").unwrap();
+    let error = m.resolve_identity(&wanted, &target()).unwrap_err();
+    assert_eq!(error.code, ErrorCode::ResourceMissing);
+    assert!(
+        error
+            .evidence
+            .iter()
+            .any(|e| e.contains("01") && e.contains("SHA-256"))
+    );
+    assert!(
+        error
+            .evidence
+            .iter()
+            .any(|e| e.contains("02") && e.contains("SHA-256"))
+    );
+    assert!(error.evidence.len() <= 8);
+    assert!(error.evidence.iter().all(|e| e.chars().count() <= 512));
+}
+
+#[test]
+fn nested_lookup_bounds_candidate_diagnostics_and_preserves_root_errors() {
+    let root = tempfile::tempdir().unwrap();
+    let (_, base, wanted) = nested_bundle("base", b"wanted");
+    let cache = root.path().join("cache");
+    let m = manager(cache.clone(), vec![base]);
+    for index in 0..12 {
+        let version = format!("{index:02}");
+        let (source, c, _) = nested_bundle(&version, b"other");
+        let writer = manager(cache.clone(), vec![c]);
+        writer
+            .import_local(&source.path().join("manifest.json"))
+            .unwrap();
+        let metadata = cache.join("test").join(&version).join(".component.json");
+        let mut c: Component = serde_json::from_slice(&fs::read(&metadata).unwrap()).unwrap();
+        c.manifest.min_engine_version = "x".repeat(2000);
+        fs::write(metadata, serde_json::to_vec(&c).unwrap()).unwrap();
+    }
+    let error = m.resolve_identity(&wanted, &target()).unwrap_err();
+    assert_eq!(error.code, ErrorCode::ResourceMissing);
+    assert_eq!(error.evidence.len(), 8);
+    assert!(error.evidence.iter().all(|e| e.chars().count() <= 512));
+    // Rename our own cache rather than deleting fixtures; opening its root must fail fatally.
+    fs::rename(&cache, root.path().join("moved-cache")).unwrap();
+    let fatal = m.resolve_identity(&wanted, &target()).unwrap_err();
+    assert_eq!(fatal.code, ErrorCode::ResourceCorrupt);
+    assert!(fatal.evidence.is_empty());
+}

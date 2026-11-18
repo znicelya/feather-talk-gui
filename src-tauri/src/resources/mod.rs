@@ -140,6 +140,7 @@ impl ResourceManager {
         target: &TargetPlatform,
     ) -> Result<PathBuf> {
         catalog::validate_target(target)?;
+        let mut evidence = Vec::new();
         for id in fs::read_dir(&self.root).map_err(fail)? {
             let id = id.map_err(fail)?;
             if !id.file_type().map_err(fail)?.is_dir()
@@ -147,49 +148,79 @@ impl ResourceManager {
             {
                 continue;
             }
-            for version in fs::read_dir(id.path()).map_err(fail)? {
-                let version = version.map_err(fail)?;
-                let path = version.path();
+            // Enumeration errors remain fatal; candidate corruption is handled below.
+            inventory::contained(&self.root, &id.path())?;
+            let mut versions = fs::read_dir(id.path())
+                .map_err(fail)?
+                .collect::<std::io::Result<Vec<_>>>()
+                .map_err(fail)?;
+            // Stable generation order makes selection and failure diagnostics reproducible.
+            versions.sort_by_key(|entry| entry.file_name());
+            for version in versions {
                 if !version.file_type().map_err(fail)?.is_dir() {
                     continue;
                 }
-                inventory::contained(&self.root, &path)?;
-                if inventory::contained(&self.root, &path.join(".component.json")).is_err() {
-                    continue;
-                }
-                let Ok(raw) = fs::read(path.join(".component.json")) else {
-                    continue;
-                };
-                let Ok(c) = serde_json::from_slice::<Component>(&raw) else {
-                    continue;
-                };
-                c.validate()?;
-                if !compatible(&c, target) || self.destination(&c) != path {
-                    continue;
-                }
-                if &c.manifest.identity == identity {
-                    self.verify_installed(&path, &c)?;
-                    return Ok(path);
-                }
-                for p in &c.manifest.relative_files {
-                    if p.file_name().is_some_and(|n| n == "manifest.json") {
-                        inventory::verify_file(&path, p, &c.files()[p])?;
-                        let nested: AssetManifest =
-                            serde_json::from_slice(&fs::read(path.join(p)).map_err(fail)?)
-                                .map_err(fail)?;
-                        if &nested.identity == identity {
-                            self.verify_installed(&path, &c)?;
-                            return Ok(path.join(p).parent().unwrap().to_path_buf());
+                let path = version.path();
+                match self.identity_in_candidate(&path, identity, target) {
+                    Ok(Some(found)) => return Ok(found),
+                    Ok(None) => {}
+                    Err(error) => {
+                        // Bound evidence independently of the number/size of damaged packages.
+                        if evidence.len() < 8 {
+                            evidence.push(
+                                format!("{}: {}", path.display(), error)
+                                    .chars()
+                                    .take(512)
+                                    .collect(),
+                            );
                         }
                     }
                 }
             }
         }
-        Err(AppError::new(
+        let mut error = AppError::new(
             ErrorCode::ResourceMissing,
             "resources",
-            "Pinned model identity is not installed",
-        ))
+            "Pinned model identity has no fully verified installed generation",
+        );
+        error.evidence = evidence;
+        Err(error)
+    }
+    /// Failure rejects this entire generation, never the remaining candidates.
+    fn identity_in_candidate(
+        &self,
+        path: &Path,
+        identity: &ModelIdentity,
+        target: &TargetPlatform,
+    ) -> Result<Option<PathBuf>> {
+        inventory::contained(&self.root, path)?;
+        inventory::contained(&self.root, &path.join(".component.json"))?;
+        let c: Component =
+            serde_json::from_slice(&fs::read(path.join(".component.json")).map_err(fail)?)
+                .map_err(fail)?;
+        c.validate()?;
+        if self.destination(&c) != path {
+            return Err(fail("installed metadata does not match generation path"));
+        }
+        if !compatible(&c, target) {
+            return Ok(None);
+        }
+        if &c.manifest.identity == identity {
+            self.verify_installed(path, &c)?;
+            return Ok(Some(path.to_path_buf()));
+        }
+        for p in &c.manifest.relative_files {
+            if p.file_name().is_some_and(|n| n == "manifest.json") {
+                inventory::verify_file(path, p, &c.files()[p])?;
+                let nested: AssetManifest =
+                    serde_json::from_slice(&fs::read(path.join(p)).map_err(fail)?).map_err(fail)?;
+                if &nested.identity == identity {
+                    self.verify_installed(path, &c)?;
+                    return Ok(Some(path.join(p).parent().unwrap().to_path_buf()));
+                }
+            }
+        }
+        Ok(None)
     }
     pub fn prepare(
         &self,
