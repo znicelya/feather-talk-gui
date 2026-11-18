@@ -24,7 +24,7 @@ use std::{
     path::{Component, Path, PathBuf},
     sync::Arc,
 };
-const POLICY: &str = "prepare-v1;ffv1-bgr24-no-jpeg;first-presented-video-origin;fps25;first-channel-f32-16k;crop152-inner144-roi-source;hubert-whole-normalize";
+const POLICY: &str = "prepare-v2-dependency-cache;ffv1-bgr24-no-jpeg;first-presented-video-origin;fps25;first-channel-f32-16k;crop152-inner144-roi-source;hubert-whole-normalize";
 pub(crate) fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
@@ -139,6 +139,8 @@ struct Generation {
     identity: String,
     input_identity: String,
     preprocessing: PreprocessingIdentity,
+    #[serde(default)]
+    dependencies: Option<Dependencies>,
     frames: Vec<FrameRecord>,
     feature_frames: usize,
     files: BTreeMap<PathBuf, String>,
@@ -148,6 +150,221 @@ struct Index {
     generation: PathBuf,
     manifest_sha256: String,
     input_identity: String,
+}
+#[derive(Clone, Serialize)]
+struct StageInputs {
+    source: String,
+    canonical: String,
+    face: String,
+    feature: String,
+}
+#[derive(Serialize, Deserialize)]
+struct Dependencies {
+    source: String,
+    canonical: String,
+    face: String,
+    feature: String,
+}
+struct Candidate {
+    directory: PathBuf,
+    generation: Generation,
+}
+struct Artifacts {
+    dependencies: Dependencies,
+    frames: Vec<FrameRecord>,
+    feature_frames: usize,
+    files: BTreeMap<PathBuf, String>,
+}
+fn key(value: &impl Serialize) -> Result<String> {
+    Ok(digest(&serde_json::to_vec(value).map_err(invalid)?))
+}
+fn stage_inputs(
+    project: &ProjectManifest,
+    manifests: &[AssetManifest],
+    tools: &MediaTools,
+    device: &DeviceDescriptor,
+) -> Result<StageInputs> {
+    let component = |kind: &str| {
+        manifests
+            .iter()
+            .find(|m| m.identity.kind == kind)
+            .ok_or_else(|| invalid(format!("Missing verified component {kind}")))
+    };
+    let source = key(&(
+        project.id,
+        &project.source_video.sha256,
+        project.source_video.size_bytes,
+    ))?;
+    let engine = env!("CARGO_PKG_VERSION");
+    Ok(StageInputs {
+        source: source.clone(),
+        canonical: key(&(
+            "canonical-v1;ffv1-bgr24-no-jpeg;first-presented-video-origin;fps25;first-channel-f32-16k",
+            engine,
+            &source,
+            file_hash(&tools.ffmpeg)?,
+            file_hash(&tools.ffprobe)?,
+        ))?,
+        face: key(&(
+            "face-v1;crop152-inner144-roi-source-numpy2-f32",
+            engine,
+            device,
+            component("scrfd_2_5g")?,
+            component("pfld_ghost_one")?,
+            component("mean_face")?,
+        ))?,
+        feature: key(&(
+            "features-v1;whole-normalize;chunk320000;even-tokens",
+            engine,
+            device,
+            component("feather_hubert")?,
+        ))?,
+    })
+}
+/// Validate the entire requested group before copying any of it. Destination is a
+/// new owned staging directory; copies are rehashed to detect concurrent changes.
+fn reuse_files(
+    root: &Path,
+    stage: &Path,
+    old: &Candidate,
+    paths: &[PathBuf],
+    cancel: &Cancellation,
+) -> Result<bool> {
+    for path in paths {
+        check(cancel)?;
+        if safe_relative(path).is_err() {
+            return Ok(false);
+        }
+        let source = old.directory.join(path);
+        let Some(expected) = old.generation.files.get(path) else {
+            return Ok(false);
+        };
+        let valid = fs::canonicalize(&source)
+            .ok()
+            .is_some_and(|p| p.starts_with(&old.directory) && p.starts_with(root))
+            && file_hash(&source).ok().as_ref() == Some(expected);
+        if !valid {
+            return Ok(false);
+        }
+    }
+    for path in paths {
+        check(cancel)?;
+        let target = stage.join(path);
+        fs::create_dir_all(
+            target
+                .parent()
+                .ok_or_else(|| invalid("Invalid artifact parent"))?,
+        )
+        .map_err(invalid)?;
+        fs::copy(old.directory.join(path), &target).map_err(ffmpeg::error)?;
+        if file_hash(&target)? != old.generation.files[path] {
+            return Err(invalid(
+                "Cache artifact changed during reuse; retry preparation",
+            ));
+        }
+    }
+    Ok(true)
+}
+/// The production dependency orchestrator. Only the stage implementations are
+/// callbacks, allowing protocol tests to count rebuilds without faking models.
+fn build_artifacts(
+    root: &Path,
+    stage: &Path,
+    previous: Option<&Candidate>,
+    inputs: &StageInputs,
+    cancel: &Cancellation,
+    canonical: impl FnOnce() -> Result<()>,
+    faces: impl FnOnce() -> Result<Vec<FrameRecord>>,
+    features: impl FnOnce() -> Result<usize>,
+) -> Result<Artifacts> {
+    check(cancel)?;
+    // No v1 migration guesses: generations without explicit dependency keys rebuild.
+    let old = previous.filter(|p| {
+        p.generation
+            .dependencies
+            .as_ref()
+            .is_some_and(|d| d.source == inputs.source)
+    });
+    let canonical_key = key(&(&inputs.source, &inputs.canonical))?;
+    let mut reused = false;
+    if let Some(old) = old {
+        if old.generation.dependencies.as_ref().unwrap().canonical == canonical_key {
+            reused = reuse_files(
+                root,
+                stage,
+                old,
+                &["video.mkv".into(), "audio.wav".into()],
+                cancel,
+            )?;
+        }
+    }
+    if !reused {
+        canonical()?;
+    }
+    check(cancel)?;
+    let video_hash = file_hash(&stage.join("video.mkv"))?;
+    let audio_hash = file_hash(&stage.join("audio.wav"))?;
+    let face_key = key(&(&canonical_key, &video_hash, &inputs.face))?;
+    let feature_key = key(&(&canonical_key, &audio_hash, &inputs.feature))?;
+    let mut frame_records = None;
+    if let Some(old) = old {
+        if old.generation.dependencies.as_ref().unwrap().face == face_key {
+            let records = &old.generation.frames;
+            // Exact contiguous owned paths: do not copy arbitrary manifest destinations.
+            let valid = !records.is_empty()
+                && records.iter().enumerate().all(|(i, r)| {
+                    r.file == PathBuf::from(format!("frames/{i}.f32"))
+                        && old.generation.files.get(&r.file) == Some(&r.sha256)
+                });
+            if valid
+                && reuse_files(
+                    root,
+                    stage,
+                    old,
+                    &records.iter().map(|r| r.file.clone()).collect::<Vec<_>>(),
+                    cancel,
+                )?
+            {
+                frame_records = Some(records.clone());
+            }
+        }
+    }
+    let frames = match frame_records {
+        Some(frames) => frames,
+        None => faces()?,
+    };
+    check(cancel)?;
+    let mut feature_frames = None;
+    if let Some(old) = old {
+        if old.generation.dependencies.as_ref().unwrap().feature == feature_key
+            && reuse_files(root, stage, old, &["features.f32".into()], cancel)?
+        {
+            feature_frames = Some(old.generation.feature_frames);
+        }
+    }
+    let feature_frames = match feature_frames {
+        Some(count) => count,
+        None => features()?,
+    };
+    check(cancel)?;
+    let mut files = BTreeMap::new();
+    for name in ["video.mkv", "audio.wav", "features.f32"] {
+        files.insert(PathBuf::from(name), file_hash(&stage.join(name))?);
+    }
+    for frame in &frames {
+        files.insert(frame.file.clone(), frame.sha256.clone());
+    }
+    Ok(Artifacts {
+        dependencies: Dependencies {
+            source: inputs.source.clone(),
+            canonical: canonical_key,
+            face: face_key,
+            feature: feature_key,
+        },
+        frames,
+        feature_frames,
+        files,
+    })
 }
 fn safe_relative(path: &Path) -> Result<()> {
     if path.as_os_str().is_empty()
@@ -177,7 +394,7 @@ fn owned_directory(root: &Path, path: &Path) -> Result<PathBuf> {
     }
     Ok(current)
 }
-fn load(root: &Path, index: &Index, project: &ProjectManifest) -> Result<PreparedProject> {
+fn candidate(root: &Path, index: &Index, project: &ProjectManifest) -> Result<Candidate> {
     safe_relative(&index.generation)?;
     let directory = root.join(&index.generation);
     if !fs::canonicalize(&directory)
@@ -194,6 +411,16 @@ fn load(root: &Path, index: &Index, project: &ProjectManifest) -> Result<Prepare
     if m.project_id != project.id || m.input_identity != index.input_identity {
         return Err(invalid("Prepared project identity mismatch"));
     }
+    Ok(Candidate {
+        directory,
+        generation: m,
+    })
+}
+fn load(root: &Path, index: &Index, project: &ProjectManifest) -> Result<PreparedProject> {
+    let Candidate {
+        directory,
+        generation: m,
+    } = candidate(root, index, project)?;
     for name in ["video.mkv", "audio.wav", "features.f32"] {
         if !m.files.contains_key(Path::new(name)) {
             return Err(invalid("Incomplete cache file index"));
@@ -339,8 +566,16 @@ pub fn prepare_project(
         manifests.push(a.manifest);
         progress(observer, "verify-components", i + 1, Some(4))?;
     }
-    let input_identity = preparation_fingerprint(project, &manifests, tools, &device.descriptor)?;
+    let stage_inputs = stage_inputs(project, &manifests, tools, &device.descriptor)?;
+    let input_identity = key(&(
+        preparation_fingerprint(project, &manifests, tools, &device.descriptor)?,
+        &stage_inputs,
+    ))?;
     let index_path = cache.join("index.json");
+    let previous = fs::read(&index_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Index>(&bytes).ok())
+        .and_then(|index| candidate(&root, &index, project).ok());
     if let Ok(bytes) = fs::read(&index_path) {
         if let Ok(index) = serde_json::from_slice::<Index>(&bytes) {
             if index.input_identity == input_identity {
@@ -358,80 +593,29 @@ pub fn prepare_project(
         path: stage.clone(),
         directory: true,
     };
-    progress(observer, "canonical-media", 0, None)?;
-    ffmpeg::canonicalize(&source, &stage, tools, cancel)?;
-    let info = probe(&stage.join("video.mkv"), &stage, tools, cancel)?;
-    let mut raw = ffmpeg::decode_frames(&stage, tools, cancel)?;
-    let bytes_per_frame = info.width * info.height * 3;
-    let count = raw.metadata().map_err(invalid)?.len() as usize / bytes_per_frame;
-    if count == 0 || raw.metadata().map_err(invalid)?.len() as usize % bytes_per_frame != 0 {
-        return Err(invalid("Canonical decoder produced invalid frame bytes"));
-    }
-    fs::create_dir(stage.join("frames")).map_err(invalid)?;
-    let detector = Scrfd::load(&assets.join("scrfd_2_5g"), &device.device)?;
-    let landmark_model = PfldGhostOne::load(&assets.join("pfld_ghost_one"), &device.device)?;
-    let mean = load_mean_face(&assets.join("mean_face"))?;
-    let mut frames = vec![];
-    let mut files = BTreeMap::new();
-    for index in 0..count {
-        check(cancel)?;
-        let mut data = vec![0; bytes_per_frame];
-        raw.read_exact(&mut data).map_err(invalid)?;
-        let frame = BgrFrame {
-            width: info.width,
-            height: info.height,
-            stride: info.width * 3,
-            data,
-        };
-        let attach = |mut e: AppError| {
-            e.evidence.push(format!(
-                "canonical_frame={index}; timestamp_seconds={:.6}; stage=frame-landmarks",
-                index as f64 / 25.
-            ));
-            e
-        };
-        let landmarks = locate_face(&detector, &landmark_model, &mean, &frame).map_err(attach)?;
-        let prepared = prepare_frame(&frame, &landmarks).map_err(attach)?;
-        let file = PathBuf::from(format!("frames/{index}.f32"));
-        let bytes: Vec<_> = prepared
-            .target
-            .iter()
-            .chain(&prepared.mask)
-            .flat_map(|v| v.to_le_bytes())
-            .collect();
-        fs::write(stage.join(&file), &bytes).map_err(ffmpeg::error)?;
-        let hash = digest(&bytes);
-        files.insert(file.clone(), hash.clone());
-        frames.push(FrameRecord {
-            file,
-            sha256: hash,
-            landmarks: landmarks.points.to_vec(),
-        });
-        progress(observer, "frame-landmarks", index + 1, Some(count))?;
-    }
-    drop(raw);
-    fs::remove_file(stage.join("decoded.bgr")).map_err(invalid)?;
-    drop(detector);
-    drop(landmark_model);
-    check(cancel)?;
-    progress(observer, "audio-features", 0, None)?;
-    let samples = ffmpeg::read_waveform(&stage.join("audio.wav"))?;
-    let model = FeatherHubert::load(&assets.join("feather_hubert"), &device.device)?;
-    let features = extract_audio_features_cancellable(&model, &samples, cancel)?;
-    check(cancel)?;
-    if count.min(features.video_frames) < 2 {
+    let Artifacts {
+        dependencies,
+        frames,
+        feature_frames,
+        files,
+    } = build_artifacts(
+        &root,
+        &stage,
+        previous.as_ref(),
+        &stage_inputs,
+        cancel,
+        || {
+            progress(observer, "canonical-media", 0, None)?;
+            ffmpeg::canonicalize(&source, &stage, tools, cancel)
+        },
+        || build_face_frames(&stage, assets, tools, device, observer, cancel),
+        || build_audio_features(&stage, assets, device, observer, cancel),
+    )?;
+    let count = frames.len();
+    if count.min(feature_frames) < 2 {
         return Err(invalid(
             "At least two aligned video/audio frames are required",
         ));
-    }
-    let mut file = fs::File::create(stage.join("features.f32")).map_err(ffmpeg::error)?;
-    for v in features.values {
-        file.write_all(&v.to_le_bytes()).map_err(ffmpeg::error)?;
-    }
-    file.sync_all().map_err(invalid)?;
-    drop(file);
-    for name in ["video.mkv", "audio.wav", "features.f32"] {
-        files.insert(PathBuf::from(name), file_hash(&stage.join(name))?);
     }
     let identity = digest(&serde_json::to_vec(&(&input_identity, &files)).map_err(invalid)?);
     let relative = PathBuf::from(format!("cache/prepared/{identity}-{}", ProjectId::new()));
@@ -448,7 +632,8 @@ pub fn prepare_project(
         input_identity: input_identity.clone(),
         preprocessing,
         frames,
-        feature_frames: features.video_frames,
+        feature_frames,
+        dependencies: Some(dependencies),
         files,
     };
     let manifest = serde_json::to_vec(&generation).map_err(invalid)?;
@@ -500,6 +685,89 @@ pub fn prepare_project(
     Ok(result)
 }
 
+fn build_face_frames(
+    stage: &Path,
+    assets: &Path,
+    tools: &MediaTools,
+    device: &ExecutionDevice,
+    observer: &dyn TaskObserver,
+    cancel: &Cancellation,
+) -> Result<Vec<FrameRecord>> {
+    let info = probe(&stage.join("video.mkv"), &stage, tools, cancel)?;
+    let mut raw = ffmpeg::decode_frames(&stage, tools, cancel)?;
+    let bytes_per_frame = info.width * info.height * 3;
+    let count = raw.metadata().map_err(invalid)?.len() as usize / bytes_per_frame;
+    if count == 0 || raw.metadata().map_err(invalid)?.len() as usize % bytes_per_frame != 0 {
+        return Err(invalid("Canonical decoder produced invalid frame bytes"));
+    }
+    fs::create_dir(stage.join("frames")).map_err(invalid)?;
+    let detector = Scrfd::load(&assets.join("scrfd_2_5g"), &device.device)?;
+    let landmark_model = PfldGhostOne::load(&assets.join("pfld_ghost_one"), &device.device)?;
+    let mean = load_mean_face(&assets.join("mean_face"))?;
+    let mut frames = vec![];
+    for index in 0..count {
+        check(cancel)?;
+        let mut data = vec![0; bytes_per_frame];
+        raw.read_exact(&mut data).map_err(invalid)?;
+        let frame = BgrFrame {
+            width: info.width,
+            height: info.height,
+            stride: info.width * 3,
+            data,
+        };
+        let attach = |mut e: AppError| {
+            e.evidence.push(format!(
+                "canonical_frame={index}; timestamp_seconds={:.6}; stage=frame-landmarks",
+                index as f64 / 25.
+            ));
+            e
+        };
+        let landmarks = locate_face(&detector, &landmark_model, &mean, &frame).map_err(attach)?;
+        let prepared = prepare_frame(&frame, &landmarks).map_err(attach)?;
+        let file = PathBuf::from(format!("frames/{index}.f32"));
+        let bytes: Vec<_> = prepared
+            .target
+            .iter()
+            .chain(&prepared.mask)
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        fs::write(stage.join(&file), &bytes).map_err(ffmpeg::error)?;
+        let hash = digest(&bytes);
+        frames.push(FrameRecord {
+            file,
+            sha256: hash,
+            landmarks: landmarks.points.to_vec(),
+        });
+        progress(observer, "frame-landmarks", index + 1, Some(count))?;
+    }
+    drop(raw);
+    fs::remove_file(stage.join("decoded.bgr")).map_err(invalid)?;
+    drop(detector);
+    drop(landmark_model);
+    Ok(frames)
+}
+fn build_audio_features(
+    stage: &Path,
+    assets: &Path,
+    device: &ExecutionDevice,
+    observer: &dyn TaskObserver,
+    cancel: &Cancellation,
+) -> Result<usize> {
+    check(cancel)?;
+    progress(observer, "audio-features", 0, None)?;
+    let samples = ffmpeg::read_waveform(&stage.join("audio.wav"))?;
+    let model = FeatherHubert::load(&assets.join("feather_hubert"), &device.device)?;
+    let features = extract_audio_features_cancellable(&model, &samples, cancel)?;
+    check(cancel)?;
+    let mut file = fs::File::create(stage.join("features.f32")).map_err(ffmpeg::error)?;
+    for v in features.values {
+        file.write_all(&v.to_le_bytes()).map_err(ffmpeg::error)?;
+    }
+    file.sync_all().map_err(invalid)?;
+    drop(file);
+    Ok(features.video_frames)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -534,10 +802,19 @@ mod tests {
         };
         fs::write(&tools.ffmpeg, b"ffmpeg executable identity").unwrap();
         fs::write(&tools.ffprobe, b"ffprobe executable identity").unwrap();
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../.artifacts/assets/feather_hubert/manifest.json");
-        let mut manifests: Vec<AssetManifest> =
-            vec![serde_json::from_slice(&fs::read(path).unwrap()).unwrap()];
+        let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.artifacts/assets");
+        let mut manifests: Vec<AssetManifest> = [
+            "feather_hubert",
+            "scrfd_2_5g",
+            "pfld_ghost_one",
+            "mean_face",
+        ]
+        .iter()
+        .map(|name| {
+            serde_json::from_slice(&fs::read(assets.join(name).join("manifest.json")).unwrap())
+                .unwrap()
+        })
+        .collect();
         let device = DeviceDescriptor {
             id: "flex:0".into(),
             name: "CPU".into(),
@@ -552,11 +829,24 @@ mod tests {
             old,
             preparation_fingerprint(&p, &manifests, &tools, &device).unwrap()
         );
+        let before = stage_inputs(&p, &manifests, &tools, &device).unwrap();
         manifests[0].identity.weights_sha256 = "changed audio model hash".into();
         assert_ne!(
             old,
             preparation_fingerprint(&p, &manifests, &tools, &device).unwrap()
         );
+        let after = stage_inputs(&p, &manifests, &tools, &device).unwrap();
+        assert_eq!(before.source, after.source);
+        assert_eq!(before.canonical, after.canonical);
+        assert_eq!(before.face, after.face);
+        assert_ne!(before.feature, after.feature);
+        manifests[1]
+            .hashes
+            .insert("config.json".into(), "new detector config".into());
+        let face_changed = stage_inputs(&p, &manifests, &tools, &device).unwrap();
+        assert_eq!(after.canonical, face_changed.canonical);
+        assert_eq!(after.feature, face_changed.feature);
+        assert_ne!(after.face, face_changed.face);
         fs::write(&tools.ffmpeg, b"changed executable").unwrap();
         let changed = preparation_fingerprint(&p, &manifests, &tools, &device).unwrap();
         manifests[0].identity.weights_sha256 = "another model hash".into();
@@ -596,6 +886,7 @@ mod tests {
         }
         let generation = Generation {
             project_id: p.id,
+            dependencies: None,
             identity: "output identity".into(),
             input_identity: "inputs".into(),
             preprocessing: PreprocessingIdentity {
@@ -628,5 +919,124 @@ mod tests {
         assert!(load(&root, &index, &p).is_err());
         fs::write(dir.join("frames/0.f32"), b"broken").unwrap();
         assert!(cached.read_frame(0).is_err());
+    }
+    #[test]
+    fn dependency_cache_orchestration_rebuilds_only_affected_stages() {
+        // Protocol fixture: these callbacks count disk stages, not neural acceptance.
+        fn run(
+            root: &Path,
+            previous: Option<&Candidate>,
+            input: &StageInputs,
+        ) -> (PathBuf, Artifacts, [u32; 3]) {
+            let stage = root.join(format!("stage-{}", ProjectId::new()));
+            fs::create_dir(&stage).unwrap();
+            let counts = std::cell::RefCell::new([0; 3]);
+            let result = build_artifacts(
+                root,
+                &stage,
+                previous,
+                input,
+                &Cancellation::new(),
+                || {
+                    counts.borrow_mut()[0] += 1;
+                    fs::write(stage.join("video.mkv"), b"video").unwrap();
+                    fs::write(stage.join("audio.wav"), b"audio").unwrap();
+                    Ok(())
+                },
+                || {
+                    counts.borrow_mut()[1] += 1;
+                    fs::create_dir(stage.join("frames")).unwrap();
+                    let file = PathBuf::from("frames/0.f32");
+                    fs::write(stage.join(&file), b"frame").unwrap();
+                    Ok(vec![FrameRecord {
+                        file,
+                        sha256: digest(b"frame"),
+                        landmarks: vec![[1, 2]; 110],
+                    }])
+                },
+                || {
+                    counts.borrow_mut()[2] += 1;
+                    fs::write(stage.join("features.f32"), b"features").unwrap();
+                    Ok(1)
+                },
+            )
+            .unwrap();
+            (stage, result, counts.into_inner())
+        }
+        let root = root();
+        let p = project();
+        let inputs = StageInputs {
+            source: "source".into(),
+            canonical: "canonical".into(),
+            face: "face-models-config".into(),
+            feature: "audio-model-config".into(),
+        };
+        let (directory, a, counts) = run(&root, None, &inputs);
+        assert_eq!(counts, [1, 1, 1]);
+        let previous = Candidate {
+            directory,
+            generation: Generation {
+                project_id: p.id,
+                identity: "output".into(),
+                input_identity: "input".into(),
+                dependencies: Some(a.dependencies),
+                preprocessing: PreprocessingIdentity {
+                    version: POLICY.into(),
+                    source_sha256: "source".into(),
+                    config_sha256: "input".into(),
+                    cache_directory: "cache".into(),
+                    component_identities: vec![],
+                },
+                frames: a.frames,
+                feature_frames: a.feature_frames,
+                files: a.files,
+            },
+        };
+        assert_eq!(run(&root, Some(&previous), &inputs).2, [0, 0, 0]);
+        let mut changed = inputs.clone();
+        changed.feature = "new audio weights".into();
+        assert_eq!(run(&root, Some(&previous), &changed).2, [0, 0, 1]);
+        fs::write(previous.directory.join("features.f32"), b"corrupt").unwrap();
+        assert_eq!(run(&root, Some(&previous), &inputs).2, [0, 0, 1]);
+        fs::write(previous.directory.join("features.f32"), b"features").unwrap();
+        changed = inputs.clone();
+        changed.face = "new face model".into();
+        assert_eq!(run(&root, Some(&previous), &changed).2, [0, 1, 0]);
+        changed = inputs.clone();
+        changed.canonical = "new canonical config".into();
+        assert_eq!(run(&root, Some(&previous), &changed).2, [1, 1, 1]);
+        changed = inputs.clone();
+        changed.source = "new source".into();
+        assert_eq!(run(&root, Some(&previous), &changed).2, [1, 1, 1]);
+        fs::write(previous.directory.join("frames/0.f32"), b"corrupt").unwrap();
+        assert_eq!(run(&root, Some(&previous), &inputs).2, [0, 1, 0]);
+        fs::write(previous.directory.join("frames/0.f32"), b"frame").unwrap();
+        fs::write(previous.directory.join("audio.wav"), b"corrupt").unwrap();
+        assert_eq!(run(&root, Some(&previous), &inputs).2, [1, 0, 0]);
+        fs::write(previous.directory.join("audio.wav"), b"audio").unwrap();
+        let failed_stage = root.join("failed-stage");
+        fs::create_dir(&failed_stage).unwrap();
+        let old_hashes = previous.generation.files.clone();
+        changed = inputs.clone();
+        changed.feature = "failed new feature model".into();
+        let error = build_artifacts(
+            &root,
+            &failed_stage,
+            Some(&previous),
+            &changed,
+            &Cancellation::new(),
+            || panic!("Canonical stage must be reused"),
+            || panic!("Face stage must be reused"),
+            || Err(invalid("synthetic feature failure")),
+        );
+        assert!(error.is_err());
+        for (file, hash) in old_hashes {
+            assert_eq!(file_hash(&previous.directory.join(file)).unwrap(), hash);
+        }
+        // Reuse never allows destinations from an untrusted frame index.
+        let mut unsafe_previous = previous;
+        unsafe_previous.generation.frames[0].file = "../escape.f32".into();
+        assert_eq!(run(&root, Some(&unsafe_previous), &inputs).2, [0, 1, 0]);
+        assert!(!root.join("escape.f32").exists());
     }
 }
