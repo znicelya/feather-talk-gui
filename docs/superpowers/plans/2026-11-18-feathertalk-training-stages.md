@@ -55,10 +55,12 @@ Execution note: initial RED covered the missing state/seed module; most full pro
 **Consumes:** reviewed9b state/checkpoints, current PreparedProject+PairSampler, VggFeatures/compute_loss.
 **Produces:** complete_step(state,prepared,vgg,device,cancel)->Result<StepOutcome> (concrete name/signature implementer records); sampled history writer, real same-device/cross-device continuation test helpers. Public train loop may wait for9d; do not publish a fake Auto implementation.
 
-- [ ] Step1: Failing tests for state commit after complete optimizer step, failed/canceled-before-step sampler rollback, nextstep continuousvsresume parameters/moments/time/BN/indices/references/seeds.
-- [ ] Step2: Implement actual paired full-loss backward/Adam, explicit learning settings, serialized per-step RNG seed and staged sampler progress, next epoch transition without droppedtail, sampled metrics <=2Hz with durable bounded page support.
-- [ ] Step3: Run minimum meaningful full-model objective finite/decreasing short overfit on CPU and actualGPU, same-device exact continuation and CPU<->GPU finite continuation with tolerances. Keep VGG frozen. Real footage/effect pending not simulated.
-- [ ] Step4: Cover amended code, report APIs/evidence, scoped commit and fresh review.
+- [x] Step1: Failing tests for state commit after complete optimizer step, failed/canceled-before-step sampler rollback, nextstep continuousvsresume parameters/moments/time/BN/indices/references/seeds.
+- [x] Step2: Implement actual paired full-loss backward/Adam, explicit learning settings, serialized per-step RNG seed and staged sampler progress, next epoch transition without droppedtail, sampled metrics <=2Hz with durable bounded page support.
+- [x] Step3: Run minimum meaningful full-model objective finite/decreasing short overfit on CPU and actualGPU, same-device exact continuation and CPU<->GPU finite continuation with tolerances. Keep VGG frozen. Real footage/effect pending not simulated.
+- [x] Step4: Cover amended code, report APIs/evidence, scoped commit and fresh review.
+
+Execution note: initial RED established the missing API; broader behavioral cases were added alongside implementation. The VGG dependency fix has explicit behavioral RED/GREEN. Actual CPU/CUDA/Vulkan full-objective results and evidence limits are recorded in task-9c-report.md.
 
 ## Stage 9d: Isolated probing and public train lifecycle
 
