@@ -9,6 +9,8 @@ use std::{
 };
 const MAX_LINE: u64 = 65536;
 const MAX_PAGE: u32 = 1000;
+#[cfg(test)]
+thread_local! {pub(super) static READ_ONLY_WRITE:std::cell::Cell<bool>=const {std::cell::Cell::new(false)};}
 fn error(e: impl std::fmt::Display) -> AppError {
     AppError::new(
         ErrorCode::ResourceCorrupt,
@@ -230,6 +232,10 @@ impl SampledMetrics {
             return Err(error("Metrics record exceeds 64 KiB"));
         }
         // Reopen rejects a partial tail after any interrupted append.
+        #[cfg(test)]
+        if READ_ONLY_WRITE.with(|flag| flag.replace(false)) {
+            self.file = File::open(path(state.project_directory())?).map_err(error)?;
+        }
         self.file.write_all(&bytes).map_err(error)?;
         self.file.sync_data().map_err(error)?;
         Ok(Some(m))

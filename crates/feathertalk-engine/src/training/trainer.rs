@@ -112,6 +112,10 @@ pub fn complete_step(
             )
             .reshape([b, 2, 3, 144, 144]);
         #[cfg(test)]
+        if CANCEL_AFTER_FORWARD.with(|flag| flag.replace(false)) {
+            cancel.cancel();
+        }
+        #[cfg(test)]
         if FAIL_AFTER_FORWARD.with(|flag| flag.replace(false)) {
             assert!(
                 candidate
@@ -188,6 +192,8 @@ pub fn complete_step(
 
 #[cfg(test)]
 thread_local! { static FAIL_AFTER_FORWARD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+#[cfg(test)]
+thread_local! { pub(super) static CANCEL_AFTER_FORWARD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 #[cfg(test)]
 mod tests {
     use super::*;

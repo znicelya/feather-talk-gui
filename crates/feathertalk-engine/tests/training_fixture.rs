@@ -12,6 +12,11 @@ fn file_hash(path: &Path) -> std::io::Result<String> {
     Ok(digest(&fs::read(path)?))
 }
 pub fn fixture() -> (PathBuf, feathertalk_engine::data::prepared::PreparedProject) {
+    fixture_frames(2)
+}
+pub fn fixture_frames(
+    count: usize,
+) -> (PathBuf, feathertalk_engine::data::prepared::PreparedProject) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
         "../../.artifacts/task9c-projects/{}",
         ProjectId::new()
@@ -69,9 +74,12 @@ pub fn fixture() -> (PathBuf, feathertalk_engine::data::prepared::PreparedProjec
         fs::write(generation.join(name), &bytes).unwrap();
         files.insert(name, digest(&bytes));
     }
-    let m = serde_json::json!({"project_id":p.id,"identity":"owned-fixed-data-v1","input_identity":"fixture-inputs","preprocessing":prep,"frames":[
-        {"file":"frames/0.f32","sha256":files["frames/0.f32"],"landmarks":[]},
-        {"file":"frames/1.f32","sha256":files["frames/1.f32"],"landmarks":[]}],"feature_frames":2,"files":files});
+    let features = vec![0; count * 2048 * 4];
+    fs::write(generation.join("features.f32"), &features).unwrap();
+    files.insert("features.f32", digest(&features));
+    // Extra frames may reference the same immutable fixture file.
+    let frames:Vec<_>=(0..count).map(|_|serde_json::json!({"file":"frames/0.f32","sha256":files["frames/0.f32"],"landmarks":[]})).collect();
+    let m = serde_json::json!({"project_id":p.id,"identity":"owned-fixed-data-v1","input_identity":"fixture-inputs","preprocessing":prep,"frames":frames,"feature_frames":count,"files":files});
     fs::write(
         generation.join("manifest.json"),
         serde_json::to_vec(&m).unwrap(),
