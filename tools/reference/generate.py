@@ -45,12 +45,12 @@ def generate_reference(source_dir: Path, assets: Path, output_dir: Path) -> Path
         save_file(clean, path)
         entries[name] = {'file': path.name, 'sha256': sha256(path), 'configuration': configuration,
             'tolerance': tolerances[tolerance], 'tensors': {k: {'shape': list(v.shape), 'dtype': str(v.dtype)} for k,v in clean.items()}}
-    def operator(name, module, inputs, config):
+    def operator(name, module, inputs, config, upstream_override=None):
         module.train()
         module.zero_grad(set_to_none=True)
         inputs = tuple(x.detach().requires_grad_() for x in inputs)
         y = module(*inputs)
-        upstream = torch.linspace(-0.7, 1.3, y.numel()).reshape_as(y)
+        upstream = torch.linspace(-0.7, 1.3, y.numel()).reshape_as(y) if upstream_override is None else upstream_override
         (y * upstream).sum().backward()
         data = {f'input.{i}': x for i,x in enumerate(inputs)}
         data.update({'output': y, 'upstream_gradient': upstream, 'objective': (y * upstream).sum()})
@@ -58,6 +58,9 @@ def generate_reference(source_dir: Path, assets: Path, output_dir: Path) -> Path
         data.update({'state.'+k:v for k,v in module.state_dict().items()})
         data.update({'gradient.'+k:p.grad for k,p in module.named_parameters() if p.grad is not None})
         save(name, data, config)
+        if isinstance(module, (torch.nn.BatchNorm2d, torch.nn.GroupNorm)):
+            from normalization_calibration import calibrate_normalization
+            entries[name]['tensor_tolerances'] = calibrate_normalization(module, inputs, upstream, inputs[0].grad, tolerances['operator'])
     x = torch.linspace(-1, 1, 2*4*5*7).reshape(2,4,5,7)
     operator('resize_align_corners', torch.nn.Upsample(size=(9,11), mode='bilinear', align_corners=True), (x,), {'align_corners': True, 'mode': 'bilinear', 'size': [9,11], 'objective': 'sum(output * upstream_gradient)'})
     operator('group_dilated_conv2d', torch.nn.Conv2d(4,8,3,padding=2,dilation=2,groups=2), (x,), {'groups':2,'dilation':2,'padding':2,'kernel':3})
@@ -73,6 +76,13 @@ def generate_reference(source_dir: Path, assets: Path, output_dir: Path) -> Path
     save('batch_norm_eval', {'input':x,'output':bn(x), **{'state.'+k:v for k,v in bn.state_dict().items()}}, {'epsilon':1e-5,'uses_running_statistics':True})
     operator('avg_pool_include_padding', torch.nn.AvgPool2d(5,1,2,count_include_pad=True), (x,), {'kernel':5,'stride':1,'padding':2,'count_include_pad':True})
     operator('spatial_audio_attention', visual.SpatialAudioFusion(8,audio_dim=12,attention_dim=8,num_heads=2,max_audio_steps=5,center_index=2), (torch.randn(2,8,3,4),torch.randn(2,5,12)), {'visual_channels':8,'audio_dim':12,'attention_dim':8,'num_heads':2,'max_audio_steps':5,'center_index':2})
+    # Deterministic informative gradients without changing the original global RNG stream.
+    for norm_name, norm in [('group_norm_nonlinear', torch.nn.GroupNorm(2,4)), ('batch_norm_nonlinear', torch.nn.BatchNorm2d(4))]:
+        with torch.no_grad():
+            norm.weight.copy_(torch.tensor([0.7, 1.2, -0.8, 1.5]))
+            norm.bias.copy_(torch.tensor([0.2, -0.3, 0.1, 0.4]))
+        upstream = torch.sin(torch.arange(x.numel(), dtype=torch.float32)*0.37).reshape_as(x)
+        operator(norm_name, norm, (x,), {'epsilon':1e-5,'groups':2 if norm_name.startswith('group') else 1,'momentum':0.1,'upstream':'sin(arange * 0.37)'}, upstream)
     def network(name, module, inputs, layers):
         captured = {}
         handles = []

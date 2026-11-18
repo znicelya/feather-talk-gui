@@ -92,3 +92,33 @@ def test_references_are_complete_and_reproducible(tmp_path):
     broken.write_bytes(broken.read_bytes()[:-1] + b'x')
     with pytest.raises(ValueError, match='digest'):
         verify_reference(first.parent)
+
+def test_normalization_calibration_and_mutations():
+    import json
+    import torch
+    from safetensors.torch import load_file
+    from normalization_calibration import calibrate_normalization
+    root = Path(os.environ['FT_REFERENCE_DIR'])
+    manifest = json.loads((root / 'manifest.json').read_text())
+    scaled_rejected = []
+    for name in ['batch_norm_train', 'batch_norm_train_second', 'group_norm', 'batch_norm_nonlinear', 'group_norm_nonlinear']:
+        r = load_file(root / (name + '.safetensors'))
+        module = torch.nn.GroupNorm(2, 4, eps=1e-5) if name.startswith('group_norm') else torch.nn.BatchNorm2d(4, eps=1e-5, momentum=0.1)
+        module.weight.data.copy_(r['state.weight'])
+        module.bias.data.copy_(r['state.bias'])
+        entry = manifest['cases'][name]
+        actual = calibrate_normalization(module, (r['input.0'],), r['upstream_gradient'], r['input_gradient.0'], entry['tolerance'])
+        assert actual == entry['tensor_tolerances']
+        gate = actual['input_gradient.0']
+        expected = r['input_gradient.0']
+        limit = gate['atol'] + gate['rtol'] * expected.abs()
+        assert (expected.abs() > limit).any(), 'detached/zero gradient must fail'
+        scaled_rejected.append(bool((expected.abs() * 0.01 > limit).any()))
+        if name.endswith('_nonlinear'):
+            assert scaled_rejected[-1], 'informative nonlinear case must reject 1% gradient scaling'
+    assert any(scaled_rejected), '1% scaled normalization gradient suite must fail'
+    # The unbiased correction remains covered by the original unmodified state gate.
+    r = load_file(root / 'batch_norm_train.safetensors')
+    wrong = 0.9 + 0.1 * r['input.0'].var((0, 2, 3), unbiased=False)
+    gate = manifest['cases']['batch_norm_train']['tolerance']
+    assert ((wrong-r['state.running_var']).abs() > gate['atol']+gate['rtol']*r['state.running_var'].abs()).any()

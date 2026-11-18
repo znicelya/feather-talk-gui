@@ -628,6 +628,115 @@
         "rtol": 2e-05
       }
     },
+    "batch_norm_nonlinear": {
+      "configuration": {
+        "epsilon": 1e-05,
+        "groups": 1,
+        "momentum": 0.1,
+        "upstream": "sin(arange * 0.37)"
+      },
+      "file": "batch_norm_nonlinear.safetensors",
+      "sha256": "94d7644d4133046b9251762cfd5f3b5f3593181cdb30c53d652d72d7fd116bd5",
+      "tensor_tolerances": {
+        "input_gradient.0": {
+          "atol": 2e-06,
+          "calibration": {
+            "factor": 4,
+            "max_abs_source_error": 3.8824513115542914e-07,
+            "method": "original PyTorch module FP32 versus FP64 autograd on identical frozen FP32 inputs/upstream",
+            "original_atol": 2e-06,
+            "rationale": "Empirical allowance for two FP32 reduction paths; not a mathematical error bound. No Burn outputs used."
+          },
+          "rtol": 2e-05
+        }
+      },
+      "tensors": {
+        "gradient.bias": {
+          "dtype": "torch.float32",
+          "shape": [
+            4
+          ]
+        },
+        "gradient.weight": {
+          "dtype": "torch.float32",
+          "shape": [
+            4
+          ]
+        },
+        "input.0": {
+          "dtype": "torch.float32",
+          "shape": [
+            2,
+            4,
+            5,
+            7
+          ]
+        },
+        "input_gradient.0": {
+          "dtype": "torch.float32",
+          "shape": [
+            2,
+            4,
+            5,
+            7
+          ]
+        },
+        "objective": {
+          "dtype": "torch.float32",
+          "shape": []
+        },
+        "output": {
+          "dtype": "torch.float32",
+          "shape": [
+            2,
+            4,
+            5,
+            7
+          ]
+        },
+        "state.bias": {
+          "dtype": "torch.float32",
+          "shape": [
+            4
+          ]
+        },
+        "state.num_batches_tracked": {
+          "dtype": "torch.int64",
+          "shape": []
+        },
+        "state.running_mean": {
+          "dtype": "torch.float32",
+          "shape": [
+            4
+          ]
+        },
+        "state.running_var": {
+          "dtype": "torch.float32",
+          "shape": [
+            4
+          ]
+        },
+        "state.weight": {
+          "dtype": "torch.float32",
+          "shape": [
+            4
+          ]
+        },
+        "upstream_gradient": {
+          "dtype": "torch.float32",
+          "shape": [
+            2,
+            4,
+            5,
+            7
+          ]
+        }
+      },
+      "tolerance": {
+        "atol": 2e-06,
+        "rtol": 2e-05
+      }
+    },
     "batch_norm_train": {
       "configuration": {
         "epsilon": 1e-05,
@@ -650,6 +759,19 @@
       },
       "file": "batch_norm_train.safetensors",
       "sha256": "11c976b481bdbea958d8d0de30e264a0d1c150c5225e5ac80745772e05f990d0",
+      "tensor_tolerances": {
+        "input_gradient.0": {
+          "atol": 2e-06,
+          "calibration": {
+            "factor": 4,
+            "max_abs_source_error": 2.910653366656782e-07,
+            "method": "original PyTorch module FP32 versus FP64 autograd on identical frozen FP32 inputs/upstream",
+            "original_atol": 2e-06,
+            "rationale": "Empirical allowance for two FP32 reduction paths; not a mathematical error bound. No Burn outputs used."
+          },
+          "rtol": 2e-05
+        }
+      },
       "tensors": {
         "gradient.bias": {
           "dtype": "torch.float32",
@@ -747,6 +869,19 @@
       },
       "file": "batch_norm_train_second.safetensors",
       "sha256": "94b5786b4345a2665f2cbf0f97e1923aaf5cfd28e0697082fad27715bd052e62",
+      "tensor_tolerances": {
+        "input_gradient.0": {
+          "atol": 2.577658072133726e-05,
+          "calibration": {
+            "factor": 4,
+            "max_abs_source_error": 6.444145180334315e-06,
+            "method": "original PyTorch module FP32 versus FP64 autograd on identical frozen FP32 inputs/upstream",
+            "original_atol": 2e-06,
+            "rationale": "Empirical allowance for two FP32 reduction paths; not a mathematical error bound. No Burn outputs used."
+          },
+          "rtol": 2e-05
+        }
+      },
       "tensors": {
         "gradient.bias": {
           "dtype": "torch.float32",
@@ -5586,6 +5721,19 @@
       },
       "file": "group_norm.safetensors",
       "sha256": "49aa9cf05f1d6ac63e5e30bddb49b85665f62f5a51e5846e37729109942295cc",
+      "tensor_tolerances": {
+        "input_gradient.0": {
+          "atol": 2.2772265957371474e-05,
+          "calibration": {
+            "factor": 4,
+            "max_abs_source_error": 5.693066489342868e-06,
+            "method": "original PyTorch module FP32 versus FP64 autograd on identical frozen FP32 inputs/upstream",
+            "original_atol": 2e-06,
+            "rationale": "Empirical allowance for two FP32 reduction paths; not a mathematical error bound. No Burn outputs used."
+          },
+          "rtol": 2e-05
+        }
+      },
       "tensors": {
         "gradient.bias": {
           "dtype": "torch.float32",
@@ -5695,6 +5843,99 @@
           "dtype": "torch.float32",
           "shape": [
             4
+          ]
+        }
+      },
+      "tolerance": {
+        "atol": 2e-06,
+        "rtol": 2e-05
+      }
+    },
+    "group_norm_nonlinear": {
+      "configuration": {
+        "epsilon": 1e-05,
+        "groups": 2,
+        "momentum": 0.1,
+        "upstream": "sin(arange * 0.37)"
+      },
+      "file": "group_norm_nonlinear.safetensors",
+      "sha256": "2e215d84a7ac150cfb4273305b0f6fb19653d3646449869063157950401dcfe1",
+      "tensor_tolerances": {
+        "input_gradient.0": {
+          "atol": 1.3292447604840163e-05,
+          "calibration": {
+            "factor": 4,
+            "max_abs_source_error": 3.3231119012100407e-06,
+            "method": "original PyTorch module FP32 versus FP64 autograd on identical frozen FP32 inputs/upstream",
+            "original_atol": 2e-06,
+            "rationale": "Empirical allowance for two FP32 reduction paths; not a mathematical error bound. No Burn outputs used."
+          },
+          "rtol": 2e-05
+        }
+      },
+      "tensors": {
+        "gradient.bias": {
+          "dtype": "torch.float32",
+          "shape": [
+            4
+          ]
+        },
+        "gradient.weight": {
+          "dtype": "torch.float32",
+          "shape": [
+            4
+          ]
+        },
+        "input.0": {
+          "dtype": "torch.float32",
+          "shape": [
+            2,
+            4,
+            5,
+            7
+          ]
+        },
+        "input_gradient.0": {
+          "dtype": "torch.float32",
+          "shape": [
+            2,
+            4,
+            5,
+            7
+          ]
+        },
+        "objective": {
+          "dtype": "torch.float32",
+          "shape": []
+        },
+        "output": {
+          "dtype": "torch.float32",
+          "shape": [
+            2,
+            4,
+            5,
+            7
+          ]
+        },
+        "state.bias": {
+          "dtype": "torch.float32",
+          "shape": [
+            4
+          ]
+        },
+        "state.weight": {
+          "dtype": "torch.float32",
+          "shape": [
+            4
+          ]
+        },
+        "upstream_gradient": {
+          "dtype": "torch.float32",
+          "shape": [
+            2,
+            4,
+            5,
+            7
           ]
         }
       },
