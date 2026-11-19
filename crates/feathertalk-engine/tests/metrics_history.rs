@@ -79,9 +79,9 @@ fn canonical_history_filters_runs_bounds_pages_and_rejects_torn_tail() {
         )
         .is_err()
     );
-    let writer = SampledMetrics::open(&root, p.project_id, run).unwrap();
+    let writer = SampledMetrics::open(&root, p.project_id, run, 3).unwrap();
     assert_eq!(metrics_page(&root, &q).unwrap().items.len(), 2);
-    assert!(SampledMetrics::open(&root, p.project_id, other).is_err());
+    assert!(SampledMetrics::open(&root, p.project_id, other, 0).is_err());
     drop(writer);
     let before = fs::read(root.join("metrics.jsonl")).unwrap();
     fs::OpenOptions::new()
@@ -90,7 +90,7 @@ fn canonical_history_filters_runs_bounds_pages_and_rejects_torn_tail() {
         .unwrap()
         .write_all(b"{\"interrupted\":")
         .unwrap();
-    let err = SampledMetrics::open(&root, p.project_id, run)
+    let err = SampledMetrics::open(&root, p.project_id, run, 3)
         .err()
         .unwrap();
     assert!(err.message.contains("Interrupted trailing"));

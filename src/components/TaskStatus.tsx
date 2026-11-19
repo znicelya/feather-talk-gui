@@ -1,3 +1,6 @@
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
 import type { JobKind, TaskProgress, TaskSnapshot, TaskStatus as Status } from "../lib/contracts";
 import { deviceName, backendLabel } from "../features/settings/device-labels";
 
@@ -8,6 +11,8 @@ const statusLabel: Record<Status, string> = {
 const stages: Record<string, string> = {
   "audio-features": "提取音频特征", render: "生成人物画面", encode: "封装视频",
   training: "训练模型", "training-checkpoint": "写入检查点",
+  "verify-components": "校验资源", "prepared-cache": "读取预处理缓存", "canonical-media": "规范化素材",
+  "frame-landmarks": "分析人脸", prepared: "素材已准备",
   "resources/media": "媒体组件", "resources/worker": "运行组件", "resources/probe": "批量探测组件",
   "resources/public-assets": "公共模型", "resources/cuda-math": "CUDA 组件",
   "resources/download": "下载组件",
@@ -34,7 +39,8 @@ export function TaskStatus({ task, owner, onCancel, canCancel, connected }: {
   connected: boolean;
 }) {
   const status = task ? statusLabel[task.status] : connected ? "无活动任务" : "等待任务服务";
-  const cancelledWithCheckpoint = task?.status === "cancelled" && task.checkpoint;
+  const terminal = task?.latest_event?.payload;
+  const cancelledWithCheckpoint = task?.status === "cancelled" && terminal?.type === "cancelled" && terminal.checkpoint;
   const resourceSubset = task?.result?.kind === "resources" && !task.result.artifact.ready;
   const metrics = task?.metrics;
   return <footer className="task-bar" aria-label="任务状态">
@@ -47,12 +53,12 @@ export function TaskStatus({ task, owner, onCancel, canCancel, connected }: {
         {metrics && <small>{deviceName(metrics.device)} · {backendLabel[metrics.device.backend]} · {metrics.precision.toUpperCase()}</small>}
       </span>
     </div>
-    {task?.progress && (task.status === "running" || task.status === "cancelling") && <TaskProgressView progress={task.progress} />}
+    {task && (task.status === "running" || task.status === "cancelling") && (metrics
+      ? <div className="task-progress"><span>{task.status === "cancelling" ? "等待当前训练步和检查点写入" : "训练模型"}
+        <small>第 {metrics.epoch} 轮 · 步 {metrics.step}</small></span></div>
+      : task.progress && <TaskProgressView progress={task.progress} />)}
     {(canCancel || task?.status === "cancelling") && <Button type="button" variant="outline" size="lg" disabled={!canCancel} onClick={onCancel}>
       {task?.status === "cancelling" ? "等待任务收尾" : task?.job === "train" ? "取消并保存" : "取消任务"}
     </Button>}
   </footer>;
 }
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Progress } from "@/components/ui/progress";

@@ -10,7 +10,7 @@
 
 **Spec:** [已确认设计](../specs/2026-11-17-feathertalk-rust-migration-design.md)。执行者先读设计再读本计划。全部相对路径以 `feather-talk-gui/` 为根目录。
 
-**当前进度（2026-11-19）：** Task 1–12 已完成并经过审查。Windows CPU 与 RTX 2060 CUDA 短素材训练、取消保存及重启导出已通过，见 [Task 12 实测记录](../../validation/installed-worker.md)。Task 13 的 [Tauri 桥接](../../validation/desktop-bridge.md) 和 Task 14 的 [shadcn/ui 桌面界面](../../validation/desktop-ui.md) 已完成 Windows 原生验收。接下来是训练与 loss 曲线。其他显卡与系统实机验收、真实素材效果、安装及整机断网验证仍待完成。
+**当前进度（2026-11-19）：** Task 1–12 已完成并经过审查。Windows CPU 与 RTX 2060 CUDA 短素材训练、取消保存及重启导出已通过，见 [Task 12 实测记录](../../validation/installed-worker.md)。Task 13 的 [Tauri 桥接](../../validation/desktop-bridge.md) 和 Task 14–15 的 [shadcn/ui 桌面界面与训练](../../validation/desktop-ui.md) 已完成 Windows 原生验收。Task 16 正在验证音频导出。其他显卡与系统实机验收、真实素材效果、安装及整机断网验证仍待完成。
 
 ## Global Constraints
 
@@ -242,11 +242,11 @@ Rust 中标注为 `Result<T>` 的自有接口均使用 core 的 `type Result<T> 
 
 **Interfaces:** `validateTrainingForm(value: TrainingFormValue): TrainConfig | FormErrors`；`appendMetric(history: MetricPoint[], event: WorkerEvent, owner: { taskId: TaskId; projectId: ProjectId; runId: TrainingRunId }): MetricPoint[]`；`selectChartPoints(history: MetricPoint[], maxPoints: number): MetricPoint[]`。`MetricPoint` 直接对应 Task 1 Metrics；页面实时点按 task/project/run 归属过滤，历史来自对应 run_id 的 `read_metrics`，续训接原曲线，新训练开启新的历史。
 
-- [ ] **Step 1:** `training.test.tsx` 断言一键默认 60/8/0.001、高级值提交不被覆盖、取消等待 CheckpointCommitted 后再显示已保存；恢复失败给出原因。`metrics.test.ts` 覆盖重复/乱序/旧任务事件、切换项目历史拼接、重启恢复，断言显示降采样不修改保存的历史，分项 loss 名称与协议一致。关键断言：`expect(appendMetric(history, staleEvent, owner)).toEqual(history); expect(selectChartPoints(history, 2000).length).toBeLessThanOrEqual(2000);`。
-- [ ] **Step 2:** `pnpm test -- --run src/features/training`，预期训练流程与曲线处理缺失 FAIL。
-- [ ] **Step 3:** 接入 create/prepare/train/resume 与状态显示，总 loss 默认可见、分项可展开；高级参数含默认权重与保存策略；展示 epoch/step、真实 batch/设备/精度和耗时。采用实际流式指标更新图表并限制显示点数，订阅卸载必须清理，前端不自行伪造平滑 loss 或任务进度。
-- [ ] **Step 4:** 重跑测试和 `pnpm build`；用真实短训练观察曲线更新、停止后保存、重开项目历史与续训追加，记录 UI 可响应且指标流不会拖慢训练的对比结果。
-- [ ] **Step 5:** 提交 `feat: add one-click training and live loss monitoring`。
+- [x] **Step 1:** 新增一键默认、高级参数与安全整数校验、续训失败、取消保存、历史分页和串线防护测试；Rust 实测回归还覆盖旧检查点重复步、500 ms 限频和重开历史。
+- [x] **Step 2:** 训练流程与指标的缺失行为先复现失败；修复后 17 项前端测试通过，RTX 2060 的训练恢复与历史测试通过。
+- [x] **Step 3:** 接入从头训练、预处理、检查点恢复，使用 shadcn Chart 展示总 loss、分项、实际批量、设备、精度、学习率和耗时。只读历史页与实时事件按任务及 run 归属合并，保留全部磁盘记录，显示最多 2000 点。
+- [x] **Step 4:** 前端测试与构建通过。Windows WebView2 + RTX 2060 完成一键从头训练、旧检查点续训、实时分项曲线、取消保存及重启读回。运行中切换页面约 35 ms；指标最多每 500 ms 采样一次。同输入、多次运行的吞吐对比纳入 Task 17，详见 [训练验收](../../validation/desktop-ui.md#training-and-loss-on-windows)。
+- [x] **Step 5:** 提交 `feat: add one-click training and live loss monitoring`。
 
 ## Task 16: 音频导入、视频生成与失败恢复页面
 

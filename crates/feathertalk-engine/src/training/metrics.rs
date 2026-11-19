@@ -30,10 +30,17 @@ pub struct SampledMetrics {
     project: ProjectId,
     run: TrainingRunId,
     last_ms: Option<u64>,
-    last_step: Option<u64>,
+    last_step: u64,
 }
 impl SampledMetrics {
-    pub fn open(root: &Path, project: ProjectId, run: TrainingRunId) -> Result<Self> {
+    /// `initial_step` is the committed starting state of this invocation, not
+    /// the latest history record. An older checkpoint can replay past steps.
+    pub fn open(
+        root: &Path,
+        project: ProjectId,
+        run: TrainingRunId,
+        initial_step: u64,
+    ) -> Result<Self> {
         if super::checkpoint::read_project(root)?.id != project {
             return Err(error("Wrong project root"));
         }
@@ -60,7 +67,6 @@ impl SampledMetrics {
             .map_err(error)?;
         let mut reader = BufReader::new(file.try_clone().map_err(error)?);
         let mut last_ms: Option<u64> = None;
-        let mut last_step = None;
         while let Some(m) = read_metric_record(&mut reader)? {
             if m.project_id != project {
                 return Err(error("Metrics project mismatch"));
@@ -68,13 +74,10 @@ impl SampledMetrics {
             if m.run_id != run {
                 continue;
             }
-            if last_ms.is_some_and(|t| m.elapsed_ms < t.saturating_add(500))
-                || last_step.is_some_and(|s| m.step <= s)
-            {
+            if last_ms.is_some_and(|t| m.elapsed_ms.saturating_sub(t) < 500) {
                 return Err(error("Nonmonotonic sampled history"));
             }
             last_ms = Some(m.elapsed_ms);
-            last_step = Some(m.step);
         }
         Ok(Self {
             _lock: lock,
@@ -82,7 +85,7 @@ impl SampledMetrics {
             project,
             run,
             last_ms,
-            last_step,
+            last_step: initial_step,
         })
     }
     /// Resume the cumulative run clock from this value plus new wall time.
@@ -113,15 +116,13 @@ impl SampledMetrics {
         if self
             .last_ms
             .is_some_and(|t| elapsed_ms.saturating_sub(t) < 500)
-            || self
-                .last_step
-                .is_some_and(|s| state.metadata.global_step <= s)
+            || state.metadata.global_step <= self.last_step
         {
             return Ok(None);
         }
         // Count attempted readbacks too, including validation/I/O failures.
         self.last_ms = Some(elapsed_ms);
-        self.last_step = Some(state.metadata.global_step);
+        self.last_step = state.metadata.global_step;
         let m = TrainingMetrics {
             project_id: self.project,
             run_id: self.run,

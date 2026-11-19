@@ -86,7 +86,7 @@ fn full_objective_commits_decreases_and_exactly_resumes() {
     assert_eq!(state.metadata.epoch, 1);
     assert_eq!(first.pairs, vec![[0, 1]]);
     let mut metrics =
-        SampledMetrics::open(&root, state.metadata.project_id, state.metadata.run_id).unwrap();
+        SampledMetrics::open(&root, state.metadata.project_id, state.metadata.run_id, 0).unwrap();
     assert!(
         metrics
             .sample(&state, &first.losses, &device, 0, 1)
@@ -119,10 +119,10 @@ fn full_objective_commits_decreases_and_exactly_resumes() {
     );
     drop(metrics);
     let mut metrics =
-        SampledMetrics::open(&root, state.metadata.project_id, state.metadata.run_id).unwrap();
+        SampledMetrics::open(&root, state.metadata.project_id, state.metadata.run_id, 2).unwrap();
     assert!(
         metrics
-            .sample(&state, &second.losses, &device, 501, 1)
+            .sample(&state, &second.losses, &device, 1_000, 1)
             .unwrap()
             .is_none()
     );
@@ -152,6 +152,59 @@ fn full_objective_commits_decreases_and_exactly_resumes() {
     equal(
         &state.optimizer_bytes().unwrap(),
         &resumed.optimizer_bytes().unwrap(),
+    );
+    // Replay the same update from the older checkpoint. Both points belong to
+    // the original run, and the new point must be visible without reaching step 3.
+    let mut replay_history = SampledMetrics::open(
+        &root,
+        resumed.metadata.project_id,
+        resumed.metadata.run_id,
+        1,
+    )
+    .unwrap();
+    assert_eq!(replay_history.elapsed_base_ms(), 500);
+    assert!(
+        replay_history
+            .sample(&resumed, &replay.losses, &device, 999, 1)
+            .unwrap()
+            .is_none()
+    );
+    let point = replay_history
+        .sample(&resumed, &replay.losses, &device, 1_000, 1)
+        .unwrap()
+        .expect("older checkpoint replay must produce a sample at the next eligible time");
+    assert_eq!((point.step, point.elapsed_ms), (2, 1_000));
+    assert!(
+        replay_history
+            .sample(&resumed, &replay.losses, &device, 1_500, 1)
+            .unwrap()
+            .is_none()
+    );
+    drop(replay_history);
+    let reopened = SampledMetrics::open(
+        &root,
+        resumed.metadata.project_id,
+        resumed.metadata.run_id,
+        2,
+    )
+    .unwrap();
+    assert_eq!(reopened.elapsed_base_ms(), 1_000);
+    let page = metrics_page(
+        &root,
+        &MetricsPageRequest {
+            project_id: resumed.metadata.project_id,
+            run_id: resumed.metadata.run_id,
+            offset: 1,
+            limit: 2,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        page.items
+            .iter()
+            .map(|m| (m.step, m.elapsed_ms))
+            .collect::<Vec<_>>(),
+        [(2, 500), (2, 1_000)]
     );
     let mut after = Frozen(vec![]);
     vgg.visit(&mut after);

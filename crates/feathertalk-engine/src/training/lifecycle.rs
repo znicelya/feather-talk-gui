@@ -114,8 +114,13 @@ mod tests {
                 0
             );
             // The failed writer was dropped; a new writer can acquire its lock.
-            SampledMetrics::open(&root, loaded.metadata.project_id, loaded.metadata.run_id)
-                .unwrap();
+            SampledMetrics::open(
+                &root,
+                loaded.metadata.project_id,
+                loaded.metadata.run_id,
+                loaded.metadata.global_step,
+            )
+            .unwrap();
         } else {
             let result = result.unwrap();
             assert_eq!(result.stopping_reason, StoppingReason::Cancelled);
@@ -326,6 +331,7 @@ pub fn train(
         state.project_directory(),
         state.metadata.project_id,
         state.metadata.run_id,
+        state.metadata.global_step,
     )?;
     let base = history.elapsed_base_ms();
     let start = Instant::now();
