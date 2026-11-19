@@ -133,6 +133,8 @@ pub fn complete_step(
                 "Injected ordinary error after forward and BN mutation",
             ));
         }
+        #[cfg(all(debug_assertions, feature = "dev-worker-acceptance"))]
+        super::worker_acceptance::after_forward(state.project_directory(), cancel)?;
         let output = compute_loss(
             prediction,
             tensor(batch.target.clone(), &d),

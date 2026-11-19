@@ -17,6 +17,105 @@ const PREPROCESS_MODELS: [&str; 4] = [
     "mean_face",
 ];
 
+#[derive(Clone, Copy)]
+pub(super) struct WorkerRole {
+    pub id: &'static str,
+    kind: &'static str,
+    exact_target: bool,
+    executables: &'static [&'static str],
+}
+
+const WORKER: WorkerRole = WorkerRole {
+    id: "worker",
+    kind: "worker",
+    exact_target: true,
+    executables: &["feathertalk-worker"],
+};
+const PROBE: WorkerRole = WorkerRole {
+    id: "probe",
+    kind: "probe",
+    exact_target: true,
+    executables: &["feathertalk-probe"],
+};
+const MEDIA: WorkerRole = WorkerRole {
+    id: "media",
+    kind: "media",
+    exact_target: false,
+    executables: &["ffmpeg", "ffprobe"],
+};
+const ASSETS: WorkerRole = WorkerRole {
+    id: "public-assets",
+    kind: "model_bundle",
+    exact_target: false,
+    executables: &[],
+};
+const CUDA: WorkerRole = WorkerRole {
+    id: "cuda-math",
+    kind: "cuda_runtime",
+    exact_target: true,
+    executables: &[],
+};
+const LIBDEVICE: &str = "nvvm/libdevice/libdevice.10.bc";
+
+pub(super) fn required_roles(target: &TargetPlatform) -> impl Iterator<Item = WorkerRole> {
+    [WORKER, PROBE, MEDIA, ASSETS]
+        .into_iter()
+        .chain((target.backend == "cuda").then_some(CUDA))
+}
+
+impl WorkerRole {
+    pub fn validate(self, component: &Component, target: &TargetPlatform) -> Result<()> {
+        if component.kind != self.kind
+            || !compatible(component, target)
+            || (self.exact_target && component.target.as_ref() != Some(target))
+        {
+            return Err(AppError::new(
+                ErrorCode::UnsupportedBackend,
+                "resources",
+                format!(
+                    "Installed {} does not match the selected platform/backend",
+                    self.id
+                ),
+            ));
+        }
+        for name in self.executables {
+            executable_path(component, name, target)?;
+        }
+        if self.id == ASSETS.id && (component.target.is_some() || !has_bundle_layout(component)) {
+            return Err(fail(
+                "Installed asset bundle lacks the FeatherTalk models or mean face",
+            ));
+        }
+        if self.id == CUDA.id && !component.files().contains_key(Path::new(LIBDEVICE)) {
+            return Err(missing("The installed CUDA component lacks libdevice"));
+        }
+        Ok(())
+    }
+}
+
+fn executable_path<'a>(
+    component: &'a Component,
+    name: &str,
+    target: &TargetPlatform,
+) -> Result<&'a Path> {
+    let name = if target.os == "windows" {
+        format!("{name}.exe")
+    } else {
+        name.to_owned()
+    };
+    let mut found = component
+        .executables
+        .iter()
+        .filter(|p| p.file_name().is_some_and(|file| file == name.as_str()));
+    let path = found
+        .next()
+        .ok_or_else(|| missing(format!("Missing executable {name}")))?;
+    if found.next().is_some() {
+        return Err(fail(format!("Ambiguous executable {name}")));
+    }
+    Ok(path)
+}
+
 #[derive(Debug)]
 pub struct InstalledWorker {
     binary: PathBuf,
@@ -36,22 +135,7 @@ struct Installed {
 
 impl Installed {
     fn executable(&self, name: &str, target: &TargetPlatform) -> Result<PathBuf> {
-        let name = if target.os == "windows" {
-            format!("{name}.exe")
-        } else {
-            name.to_owned()
-        };
-        let mut found = self
-            .component
-            .executables
-            .iter()
-            .filter(|p| p.file_name().is_some_and(|file| file == name.as_str()));
-        let path = found
-            .next()
-            .ok_or_else(|| missing(format!("Missing executable {name}")))?;
-        if found.next().is_some() {
-            return Err(fail(format!("Ambiguous executable {name}")));
-        }
+        let path = executable_path(&self.component, name, target)?;
         inventory::contained(&self.root, &self.root.join(path))
     }
 
@@ -132,7 +216,8 @@ impl ResourceManager {
                 )));
             }
         }
-        let selected = |id: &str, kind: &str, exact: bool| -> Result<Installed> {
+        let selected = |role: WorkerRole| -> Result<Installed> {
+            let id = role.id;
             let pin = pins
                 .get(id)
                 .ok_or_else(|| missing(format!("Select an installed {id} component")))?;
@@ -144,26 +229,17 @@ impl ResourceManager {
                 )));
             }
             let c = self.find(pin)?;
-            if c.kind != kind
-                || !compatible(&c, target)
-                || (exact && c.target.as_ref() != Some(target))
-            {
-                return Err(AppError::new(
-                    ErrorCode::UnsupportedBackend,
-                    "resources",
-                    format!("Installed {id} does not match the selected platform/backend"),
-                ));
-            }
+            role.validate(&c, target)?;
             let root = inventory::contained(&self.root, &path)?;
             self.verify_installed(&root, &c)?;
             Ok(Installed { root, component: c })
         };
 
-        let worker = selected("worker", "worker", true)?;
-        let probe = selected("probe", "probe", true)?;
-        let media = selected("media", "media", false)?;
+        let worker = selected(WORKER)?;
+        let probe = selected(PROBE)?;
+        let media = selected(MEDIA)?;
         let cuda = if target.backend == "cuda" {
-            Some(selected("cuda-math", "cuda_runtime", true)?)
+            Some(selected(CUDA)?)
         } else {
             None
         };
@@ -193,13 +269,7 @@ impl ResourceManager {
                 }))
             })?
         } else {
-            let bundle = selected("public-assets", "model_bundle", false)?;
-            if bundle.component.target.is_some() || !has_bundle_layout(&bundle.component) {
-                return Err(fail(
-                    "Installed asset bundle lacks the FeatherTalk models or mean face",
-                ));
-            }
-            bundle
+            selected(ASSETS)?
         };
 
         let binary = worker.executable("feathertalk-worker", target)?;
@@ -220,13 +290,6 @@ impl ResourceManager {
             ],
         };
         if let Some(cuda) = cuda {
-            if !cuda
-                .component
-                .files()
-                .contains_key(Path::new("nvvm/libdevice/libdevice.10.bc"))
-            {
-                return Err(missing("The installed CUDA component lacks libdevice"));
-            }
             context.cuda_root = Some(cuda.root.clone());
             context.components.push(cuda.runtime());
         }

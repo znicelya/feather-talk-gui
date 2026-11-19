@@ -115,12 +115,46 @@ impl ResourceManager {
             .cloned()
             .unwrap_or(ResourceSelection {
                 target: target.clone(),
-                resources: vec![ResourcePin {
-                    id: "application".into(),
-                    version: "unconfigured".into(),
-                }],
+                resources: vec![],
             });
-        self.inventory_selection(&selection)
+        let mut full = self.inventory_selection(&selection)?;
+        for item in &mut full.items {
+            if selection
+                .resources
+                .iter()
+                .filter(|p| p.id == item.resource.id)
+                .count()
+                > 1
+            {
+                item.ready = false;
+                item.reason = Some("Default must select one pin per resource".into());
+            }
+        }
+        for role in installed_worker::required_roles(target) {
+            if let Some(item) = full.items.iter_mut().find(|i| i.resource.id == role.id) {
+                if item.ready
+                    && let Err(error) = self
+                        .find(&item.resource)
+                        .and_then(|c| role.validate(&c, target))
+                {
+                    item.ready = false;
+                    item.reason = Some(error.to_string());
+                }
+            } else {
+                full.items.push(ResourceStatus {
+                    resource: ResourcePin {
+                        id: role.id.into(),
+                        version: "unconfigured".into(),
+                    },
+                    identity: None,
+                    path: None,
+                    ready: false,
+                    reason: Some("No default pin is configured for this required component".into()),
+                });
+            }
+        }
+        full.ready = full.items.iter().all(|item| item.ready);
+        Ok(full)
     }
     pub fn inventory_selection(&self, selection: &ResourceSelection) -> Result<ResourceInventory> {
         catalog::validate_target(&selection.target)?;

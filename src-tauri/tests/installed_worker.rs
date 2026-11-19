@@ -92,6 +92,16 @@ fn installed_binding_rejects_wrong_backend_and_changed_executable() {
         .unwrap_err();
     assert_eq!(correct_before_tamper.code, ErrorCode::ResourceMissing);
     assert!(correct_before_tamper.message.contains("probe"));
+    let partial = manager.inventory(&cpu.target).unwrap();
+    assert!(!partial.ready);
+    for item in partial.items.iter().filter(|i| !i.ready) {
+        let pin = &item.resource;
+        manager
+            .import_local(&imports[&format!("{}/{}", pin.id, pin.version)])
+            .unwrap();
+    }
+    let full = manager.inventory(&cpu.target).unwrap();
+    assert!(full.ready, "{full:?}");
 
     let installed = cache.path().join(&worker.id).join(&worker.version);
     let name = if cfg!(windows) {
@@ -109,6 +119,7 @@ fn installed_binding_rejects_wrong_backend_and_changed_executable() {
     let corrupt = manager.bind_worker(&cpu, binding, &job).unwrap_err();
     assert_eq!(corrupt.code, ErrorCode::ResourceCorrupt);
     assert!(corrupt.message.contains("SHA-256 mismatch"));
+    assert!(!manager.inventory(&cpu.target).unwrap().ready);
 }
 
 fn next(host: &mut WorkerHost) -> Option<WorkerEvent> {
@@ -123,6 +134,33 @@ fn next(host: &mut WorkerHost) -> Option<WorkerEvent> {
             HostPoll::Timeout => assert!(Instant::now() < until, "worker event deadline"),
         }
     }
+}
+
+fn wait_for_marker(host: &mut WorkerHost, task: TaskId, marker: &Path, timeout: Duration) {
+    let until = Instant::now() + timeout;
+    while !marker.is_file() {
+        assert!(
+            Instant::now() < until,
+            "gate not reached: {}",
+            marker.display()
+        );
+        match host.next_event(Duration::from_millis(100)).unwrap() {
+            HostPoll::Timeout => {}
+            HostPoll::Event(event) => {
+                println!("{}", serde_json::to_string(&event).unwrap());
+                assert_eq!(event.task_id, Some(task));
+                assert!(
+                    matches!(
+                        event.payload,
+                        EventPayload::Started { .. } | EventPayload::Progress { .. }
+                    ),
+                    "worker advanced past the gate or failed: {event:?}"
+                );
+            }
+            HostPoll::Ended => panic!("worker exited before {}", marker.display()),
+        }
+    }
+    println!("observed gate {}", marker.display());
 }
 
 fn assert_backend(device: &DeviceDescriptor, backend: &str) {
@@ -174,6 +212,16 @@ fn run_tool(path: &Path, fill: impl FnOnce(&mut Command)) -> Vec<u8> {
 #[test]
 #[ignore = "explicit local worker packages, real media, and available hardware"]
 fn installed_train_cancel_crash_and_restart() {
+    exercise_installed_worker(false);
+}
+
+#[test]
+#[ignore = "explicit instrumented debug worker (dev-worker-acceptance), real media and hardware"]
+fn installed_cancels_during_update_and_recovers_active_training_checkpoint() {
+    exercise_installed_worker(true);
+}
+
+fn exercise_installed_worker(gates: bool) {
     let base = PathBuf::from(std::env::var_os("FT_WORKER_ACCEPTANCE_ROOT").expect("artifact root"));
     let base = base.canonicalize().unwrap();
     let backend = std::env::var("FT_WORKER_ACCEPTANCE_BACKEND").expect("cpu or cuda");
@@ -232,11 +280,33 @@ fn installed_train_cancel_crash_and_restart() {
         .keep();
     println!("Project fixture: {}", directory.display());
     let source = directory.join("source.mkv");
-    fs::copy(reference_video, &source).unwrap();
+    if gates {
+        // Two frames make a one-pair epoch: the resumed job publishes a real
+        // periodic checkpoint on its first complete update, before job completion.
+        run_tool(&exe("ffmpeg"), |cmd| {
+            cmd.args(["-nostdin", "-v", "error", "-i"])
+                .arg(&reference_video)
+                .args([
+                    "-map",
+                    "0:v:0",
+                    "-map",
+                    "0:a:0",
+                    "-vf",
+                    "trim=end_frame=2",
+                    "-c:v",
+                    "ffv1",
+                    "-c:a",
+                    "pcm_s16le",
+                ])
+                .arg(&source);
+        });
+    } else {
+        fs::copy(&reference_video, &source).unwrap();
+    }
     let audio = directory.join("driving audio.wav");
     run_tool(&exe("ffmpeg"), |cmd| {
         cmd.args(["-nostdin", "-v", "error", "-i"])
-            .arg(&source)
+            .arg(&reference_video)
             .args(["-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000"])
             .arg(&audio);
     });
@@ -261,7 +331,7 @@ fn installed_train_cancel_crash_and_restart() {
         directory: directory.clone(),
     };
     let train = JobSpec::Train(TrainRequest {
-        batch_mode: if backend == "cuda" {
+        batch_mode: if backend == "cuda" && !gates {
             BatchMode::Auto
         } else {
             BatchMode::Fixed
@@ -301,14 +371,51 @@ fn installed_train_cancel_crash_and_restart() {
     );
     let task = TaskId::new();
     let started = Instant::now();
+    let gate_dir = directory.join(".worker-acceptance");
+    if gates {
+        fs::create_dir(&gate_dir).unwrap();
+        fs::write(gate_dir.join("cancel-after-forward"), []).unwrap();
+    }
     host.start(task, train.clone()).unwrap();
     assert_eq!(
-        host.start(TaskId::new(), train).unwrap_err().code,
+        host.start(TaskId::new(), train.clone()).unwrap_err().code,
         ErrorCode::Busy
     );
+    if gates {
+        wait_for_marker(
+            &mut host,
+            task,
+            &gate_dir.join("forward-complete"),
+            Duration::from_secs(900),
+        );
+        let cancellation_at = Instant::now();
+        host.cancel(task).unwrap();
+        wait_for_marker(
+            &mut host,
+            task,
+            &gate_dir.join("cancel-observed"),
+            Duration::from_secs(5),
+        );
+        assert!(
+            json::<ProjectManifest>(&project_path)
+                .checkpoints
+                .is_empty()
+        );
+        assert!(
+            !directory
+                .join(&project.metrics_path)
+                .metadata()
+                .is_ok_and(|m| m.len() > 0)
+        );
+        println!(
+            "{backend}: worker observed Cancel inside an uncommitted optimizer step after {:.2?}",
+            cancellation_at.elapsed()
+        );
+        fs::write(gate_dir.join("release-forward"), []).unwrap();
+    }
     let mut first_metric = None;
     let mut checkpoint = None;
-    let mut progress = false;
+    let mut progress = gates; // The gate waiter already drained initial progress.
     loop {
         let event = next(&mut host).expect("training event");
         assert_eq!(event.task_id, Some(task));
@@ -318,7 +425,9 @@ fn installed_train_cancel_crash_and_restart() {
                 assert_backend(&metric.device, &backend);
                 assert!(metric.step > 0 && metric.losses.total.is_finite());
                 if first_metric.is_none() {
-                    host.cancel(task).unwrap();
+                    if !gates {
+                        host.cancel(task).unwrap();
+                    }
                     first_metric = Some(metric);
                 }
             }
@@ -347,6 +456,9 @@ fn installed_train_cancel_crash_and_restart() {
         .find(|e| e.model_ref == checkpoint)
         .unwrap();
     assert!(saved.step >= first_metric.step);
+    if gates {
+        assert_eq!((saved.step, saved.epoch), (1, 1));
+    }
     assert!(
         directory
             .join(&indexed.metrics_path)
@@ -365,27 +477,69 @@ fn installed_train_cancel_crash_and_restart() {
         project_id: project.id,
         audio_path: audio,
         output_path: directory.join("prior output.mp4"),
-        model_ref: checkpoint,
+        model_ref: checkpoint.clone(),
         device: DevicePolicy::Auto,
     };
     fs::write(&generate.output_path, b"preexisting export bytes").unwrap();
     let crash_task = TaskId::new();
-    host.start(crash_task, JobSpec::Generate(generate.clone()))
-        .unwrap();
-    loop {
-        let event = next(&mut host).expect("generation event before forced exit");
-        assert_eq!(event.task_id, Some(crash_task));
-        match event.payload {
-            EventPayload::Progress { stage, .. } if stage == "audio-features" => break,
-            EventPayload::Failed { error } => {
-                panic!("generation failed before forced exit: {error:?}")
+    let (crashed_reference, expected_index) = if gates {
+        fs::remove_file(gate_dir.join("cancel-after-forward")).unwrap();
+        fs::write(gate_dir.join("hold-checkpoint"), []).unwrap();
+        let JobSpec::Train(mut resume) = train else {
+            unreachable!()
+        };
+        resume.resume = Some(checkpoint.clone());
+        host.start(crash_task, JobSpec::Train(resume)).unwrap();
+        let reference = loop {
+            let event = next(&mut host).expect("resumed training event before forced exit");
+            assert_eq!(event.task_id, Some(crash_task));
+            match event.payload {
+                EventPayload::CheckpointCommitted { model_ref } => break model_ref,
+                EventPayload::Failed { .. }
+                | EventPayload::Completed { .. }
+                | EventPayload::Cancelled { .. } => {
+                    panic!("resumed job did not stay active after a periodic save: {event:?}");
+                }
+                _ => {}
             }
-            EventPayload::Completed { .. } | EventPayload::Cancelled { .. } => {
-                panic!("generation ended before forced exit")
+        };
+        wait_for_marker(
+            &mut host,
+            crash_task,
+            &gate_dir.join("checkpoint-held"),
+            Duration::from_secs(5),
+        );
+        assert_eq!(reference.run_id, checkpoint.run_id);
+        assert_ne!(reference, checkpoint);
+        let updated: ProjectManifest = json(&project_path);
+        assert_eq!(updated.checkpoints.len(), indexed.checkpoints.len() + 1);
+        assert!(updated.checkpoints.contains(saved));
+        let periodic = updated
+            .checkpoints
+            .iter()
+            .find(|e| e.model_ref == reference)
+            .unwrap();
+        assert_eq!((periodic.step, periodic.epoch), (2, 2));
+        generate.model_ref = reference.clone();
+        (Some(reference), updated)
+    } else {
+        host.start(crash_task, JobSpec::Generate(generate.clone()))
+            .unwrap();
+        loop {
+            let event = next(&mut host).expect("generation event before forced exit");
+            assert_eq!(event.task_id, Some(crash_task));
+            match event.payload {
+                EventPayload::Progress { stage, .. } if stage == "audio-features" => break,
+                EventPayload::Failed { .. }
+                | EventPayload::Completed { .. }
+                | EventPayload::Cancelled { .. } => {
+                    panic!("generation ended before forced exit: {event:?}");
+                }
+                _ => {}
             }
-            _ => {}
         }
-    }
+        (None, indexed)
+    };
     host.terminate().unwrap();
     let mut failures = 0;
     while let Some(event) = next(&mut host) {
@@ -399,6 +553,15 @@ fn installed_train_cancel_crash_and_restart() {
                         .iter()
                         .any(|e| e.contains("exit=") && e.contains("last_stage="))
                 );
+                if let Some(reference) = &crashed_reference {
+                    assert!(
+                        error
+                            .evidence
+                            .iter()
+                            .any(|e| e.contains("committed_checkpoint=Some(")
+                                && e.contains(&reference.checkpoint_id))
+                    );
+                }
             }
             EventPayload::Completed { .. } | EventPayload::Cancelled { .. } => {
                 panic!("forced exit looked like a completed or cancelled job")
@@ -411,7 +574,7 @@ fn installed_train_cancel_crash_and_restart() {
         fs::read(&generate.output_path).unwrap(),
         b"preexisting export bytes"
     );
-    assert_eq!(json::<ProjectManifest>(&project_path), indexed);
+    assert_eq!(json::<ProjectManifest>(&project_path), expected_index);
 
     // A later catalog no longer offers the original model bundle. The accepted checkpoint still does.
     catalog

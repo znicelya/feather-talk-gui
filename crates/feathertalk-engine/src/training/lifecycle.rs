@@ -50,6 +50,8 @@ fn publish(state: &TrainingState, observer: &dyn TaskObserver) -> Result<ModelRe
             ));
             e
         })?;
+    #[cfg(all(debug_assertions, feature = "dev-worker-acceptance"))]
+    super::worker_acceptance::after_checkpoint_event(root)?;
     Ok(reference)
 }
 #[cfg(test)]

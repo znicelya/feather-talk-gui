@@ -9,6 +9,7 @@ cpu = ["flex"]
 cuda = ["feathertalk-engine/cuda"]
 vulkan = ["feathertalk-engine/vulkan"]
 metal = ["feathertalk-engine/metal"]
+dev-worker-acceptance = ["feathertalk-engine/dev-worker-acceptance"]
 [dependencies]
 feathertalk-core = { path = "../feathertalk-core" }
 feathertalk-engine = { path = "../feathertalk-engine", default-features = false }

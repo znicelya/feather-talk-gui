@@ -121,13 +121,13 @@ fn partial_and_bad_hash_never_become_ready() {
         c.manifest.urls.insert("data".into(), vec![url]);
         let root = tempfile::tempdir().unwrap();
         let m = manager(root.path().into(), vec![c.clone()]);
-        let corrupt_inventory = m.inventory(&target()).unwrap();
+        let corrupt_inventory = m.inventory_selection(&selection(&c)).unwrap();
         assert!(!corrupt_inventory.ready);
         assert!(
             m.prepare(&selection(&c), &Observer, &Cancellation::new())
                 .is_err()
         );
-        assert!(!m.inventory(&target()).unwrap().ready);
+        assert!(!m.inventory_selection(&selection(&c)).unwrap().ready);
         h.join().unwrap();
         assert!(count.load(Ordering::SeqCst) > 0);
     }
@@ -138,7 +138,7 @@ fn offline_uses_complete_versions() {
     let root = tempfile::tempdir().unwrap();
     let m = manager(root.path().into(), vec![c.clone()]);
     m.import_local(&src.path().join("manifest.json")).unwrap();
-    let complete_inventory = m.inventory(&target()).unwrap();
+    let complete_inventory = m.inventory_selection(&selection(&c)).unwrap();
     assert!(complete_inventory.ready);
     let p = complete_inventory.items[0].path.as_ref().unwrap();
     assert_eq!(fs::read(p.join("data")).unwrap(), b"complete");
@@ -148,7 +148,41 @@ fn offline_uses_complete_versions() {
             .ready
     );
     fs::write(p.join("data"), b"tampered").unwrap();
-    assert!(!m.inventory(&target()).unwrap().ready);
+    assert!(!m.inventory_selection(&selection(&c)).unwrap().ready);
+}
+
+#[test]
+fn full_inventory_reports_roles_omitted_from_an_installed_default_subset() {
+    let (source, component) = fixture("1", b"complete declared subset");
+    let root = tempfile::tempdir().unwrap();
+    let mut cuda = selection(&component);
+    cuda.target.backend = "cuda".into();
+    let manager = ResourceManager::new(
+        root.path().into(),
+        Catalog {
+            schema_version: 1,
+            components: vec![component.clone()],
+            defaults: vec![selection(&component), cuda.clone()],
+        },
+    )
+    .unwrap();
+    manager
+        .import_local(&source.path().join("manifest.json"))
+        .unwrap();
+    for subset in [selection(&component), cuda] {
+        assert!(manager.inventory_selection(&subset).unwrap().ready);
+        let full = manager.inventory(&subset.target).unwrap();
+        assert!(!full.ready, "an installed subset became a runnable app");
+        for id in ["public-assets", "worker", "probe", "media"] {
+            assert!(full.items.iter().any(|i| i.resource.id == id && !i.ready));
+        }
+        assert_eq!(
+            full.items
+                .iter()
+                .any(|i| i.resource.id == "cuda-math" && !i.ready),
+            subset.target.backend == "cuda"
+        );
+    }
 }
 #[test]
 fn upgrade_preserves_project_dependency() {
@@ -255,7 +289,7 @@ fn successful_download_retry_offline_and_cancel() {
     );
     assert_eq!(count.load(Ordering::SeqCst), 3);
     count.store(0, Ordering::SeqCst);
-    assert!(m.inventory(&target()).unwrap().ready);
+    assert!(m.inventory_selection(&selection(&c)).unwrap().ready);
     assert!(
         m.prepare(&selection(&c), &Observer, &Cancellation::new())
             .unwrap()
@@ -481,7 +515,7 @@ fn cache_os_lock_is_released_and_import_can_retry() {
     use fs2::FileExt;
     let (src, c) = fixture("1", b"x");
     let root = tempfile::tempdir().unwrap();
-    let m = manager(root.path().into(), vec![c]);
+    let m = manager(root.path().into(), vec![c.clone()]);
     let f = fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -498,7 +532,7 @@ fn cache_os_lock_is_released_and_import_can_retry() {
     );
     drop(f);
     m.import_local(&src.path().join("manifest.json")).unwrap();
-    assert!(m.inventory(&target()).unwrap().ready);
+    assert!(m.inventory_selection(&selection(&c)).unwrap().ready);
 }
 #[test]
 fn changed_bytes_cannot_reuse_immutable_pin() {
@@ -512,7 +546,7 @@ fn changed_bytes_cannot_reuse_immutable_pin() {
         next.import_local(&other.path().join("manifest.json"))
             .is_err()
     );
-    assert!(m.inventory(&target()).unwrap().ready);
+    assert!(m.inventory_selection(&selection(&a)).unwrap().ready);
 }
 #[test]
 fn cancellation_during_download_never_publishes() {
@@ -556,7 +590,7 @@ fn cancellation_during_download_never_publishes() {
         ErrorCode::Cancelled
     );
     h.join().unwrap();
-    assert!(!m.inventory(&target()).unwrap().ready);
+    assert!(!m.inventory_selection(&selection(&c)).unwrap().ready);
     assert!(!root.path().join("test/1").exists());
     assert!(!fs::read_dir(root.path()).unwrap().any(|e| {
         e.unwrap()
@@ -569,6 +603,7 @@ fn cancellation_during_download_never_publishes() {
 fn cached_symlink_escape_is_not_ready() {
     let (src, c) = fixture("1", b"x");
     let root = tempfile::tempdir().unwrap();
+    let subset = selection(&c);
     let m = manager(root.path().into(), vec![c]);
     m.import_local(&src.path().join("manifest.json")).unwrap();
     let file = root.path().join("test/1/data");
@@ -577,7 +612,7 @@ fn cached_symlink_escape_is_not_ready() {
     std::os::windows::fs::symlink_file(src.path().join("data"), &file).unwrap();
     #[cfg(unix)]
     std::os::unix::fs::symlink(src.path().join("data"), &file).unwrap();
-    assert!(!m.inventory(&target()).unwrap().ready);
+    assert!(!m.inventory_selection(&subset).unwrap().ready);
 }
 
 /// A real nested strict AssetManifest, pinned by an independent bundle manifest.
@@ -648,10 +683,11 @@ fn runtime_identity_is_not_a_model_dependency() {
     runtime.target = Some(target());
     let identity = runtime.manifest.identity.clone();
     let root = tempfile::tempdir().unwrap();
+    let subset = selection(&runtime);
     let m = manager(root.path().into(), vec![runtime]);
     m.import_local(&source.path().join("manifest.json"))
         .unwrap();
-    assert!(m.inventory(&target()).unwrap().ready);
+    assert!(m.inventory_selection(&subset).unwrap().ready);
     assert_eq!(
         m.resolve_identity(&identity, &target()).unwrap_err().code,
         ErrorCode::ResourceMissing
