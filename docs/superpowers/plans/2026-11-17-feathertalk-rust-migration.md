@@ -10,7 +10,7 @@
 
 **Spec:** [已确认设计](../specs/2026-11-17-feathertalk-rust-migration-design.md)。执行者先读设计再读本计划。全部相对路径以 `feather-talk-gui/` 为根目录。
 
-**当前进度（2026-11-19）：** Task 1–12 已完成并经过审查。Windows CPU 与 RTX 2060 CUDA 短素材训练、取消保存及重启导出已通过，见 [Task 12 实测记录](../../validation/installed-worker.md)。Task 13 的 [Tauri 桥接](../../validation/desktop-bridge.md) 已在 Windows WebView 验证 RTX 2060 设备发现、续训、实时指标、MP4 导出与预览。接下来是 Task 14 的人物和资源界面。其他显卡与系统实机验收、真实素材效果、安装及整机断网验证仍待完成。
+**当前进度（2026-11-19）：** Task 1–12 已完成并经过审查。Windows CPU 与 RTX 2060 CUDA 短素材训练、取消保存及重启导出已通过，见 [Task 12 实测记录](../../validation/installed-worker.md)。Task 13 的 [Tauri 桥接](../../validation/desktop-bridge.md) 和 Task 14 的 [shadcn/ui 桌面界面](../../validation/desktop-ui.md) 已完成 Windows 原生验收。接下来是训练与 loss 曲线。其他显卡与系统实机验收、真实素材效果、安装及整机断网验证仍待完成。
 
 ## Global Constraints
 
@@ -228,11 +228,13 @@ Rust 中标注为 `Result<T>` 的自有接口均使用 core 的 `type Result<T> 
 
 **Interfaces:** `useTaskSnapshot(): { snapshot: TaskSnapshot | null, error: AppError | null }` 定义在 `src/lib/events.ts`，订阅、初始 snapshot 和 cleanup 归该 hook；先订阅再读取快照，按 ID/seq 合并以覆盖初始化竞态。`DevicePicker` 消费 `DeviceDescriptor[]` 与 `DevicePolicy`；`ErrorDetails({ error: AppError })` 展示实际阶段/原因/建议/日志入口；`AppShell` 导航人物/训练/生成/资源设备四个功能。
 
-- [ ] **Step 1:** 写行为验证：项目创建仅接受一段视频；worker 运行时重复开始受限；资源缺失展示准备动作；资源齐全的离线状态不要求联网；错误组件分别显示 OOM、无脸、编码失败及未知异常的原始证据，未知异常不误归为 OOM。OOM fixture 的关键断言：`expect(screen.getByText(/减小 batch size/)).toBeVisible(); expect(screen.getByText(error.evidence)).toBeVisible();`。
-- [ ] **Step 2:** 加入仅本任务需要的 Vitest/Testing Library/jest-dom 脚本与 matcher 初始化，运行 `pnpm test -- --run src/features/projects/project-state.test.ts src/components/ErrorDetails.test.tsx`，预期行为缺失 FAIL。
-- [ ] **Step 3:** 实现页面与共用组件，显示实际设备/后端/精度/资源版本；应用既有 React 工程约定。实施 UI 时读取适用前端设计技能，选一种统一桌面视觉系统；本任务不引入实时/旧模型导入等未实现入口。
-- [ ] **Step 4:** 重跑行为测试和 `pnpm build`；在真实 Tauri 窗口检查初始下载、离线已就绪、空项目、长路径与详细错误视图，键盘可用，页面缩放后主要动作仍可见。
-- [ ] **Step 5:** 提交 `feat: add project and resource management screens`。
+**界面约定：** 用户要求统一使用 shadcn/ui。项目采用 `radix-nova`、Tailwind CSS 4 和本地字体，组件由官方 registry 添加；训练、loss 图表、生成及后续设置均沿用同一组件库与语义主题。
+
+- [x] **Step 1:** 行为测试覆盖单视频替换、忙碌时限制重复启动、已验证资源不会触发下载、项目切换与移动，以及 OOM、无脸、编码失败和未知异常的原始证据。
+- [x] **Step 2:** Vitest + Testing Library 新增测试先验证缺失行为（`.artifacts/task14-logs/red.log`），实现后 `pnpm test --run` 通过。
+- [x] **Step 3:** 实现人物项目、资源清单、实际设备与共用任务状态、错误诊断。shadcn/ui 组件统一按钮、表单、状态、折叠诊断和空状态；没有实时和旧模型导入入口。
+- [x] **Step 4:** 行为测试、桥接契约、前端及原生构建通过。Windows WebView2 验证初次下载缺失组件、服务器停止后校验已就绪、真实 RTX 2060、空项目和键盘跳转、资源错误详情、原生中文长路径选取与项目重开，以及 320–1120 CSS px 下的操作可达性。详见 [桌面界面验收](../../validation/desktop-ui.md)。
+- [x] **Step 5:** 提交 `feat: add project and resource management screens`。
 
 ## Task 15: 一键/高级训练与实时 loss 曲线
 

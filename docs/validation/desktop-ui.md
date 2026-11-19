@@ -1,0 +1,11 @@
+# Windows desktop UI validation
+
+The project, resource and device views and shared task diagnostics use shadcn/ui (`radix-nova`), Tailwind 4 and the bundled Geist font. `components.json` points the official CLI to `src/components/ui` and the shared theme in `src/App.css`. Task 15 and Task 16 use those same primitives.
+
+`pnpm test --run` covers single-video selection and replacement, resource preparation and the busy guard, local readiness, and structured diagnostics. `pnpm test:contracts`, `pnpm build`, and `cargo build --offline --locked -p feather-talk-gui --bin feather-talk-gui --features tauri/custom-protocol` check the bridge and embedded desktop build.
+
+On Windows, the WebView2 test used an isolated debug data directory and the [local CUDA test packages](desktop-bridge.md). It downloaded one missing probe package from a fixture HTTP server, verified its manifest and payload, and discovered the RTX 2060. After the server stopped, a new resource check still showed the local CUDA set ready. Selecting the CPU set with a deliberately unconfigured source produced the actual resource error and displayed its stage, code and suggested action. Debug builds can take tens of seconds to rehash the large packages.
+
+The empty project view supported Tab and Enter on the skip link. Native Windows dialogs selected a 145-character project directory and 154-character MKV path, both with Chinese characters and spaces, then created the project and reopened a relocated fixture with three checkpoints. At 1120, 820, 640, 390 and 320 CSS px, the create action could be scrolled into view without horizontal overflow. Closing the tested window also exited its process. Screenshots and fixture helpers are under `.artifacts/task14-logs/` locally.
+
+The layout follows the design skill's applicable desktop checks for alignment, semantic colors, visible control labels, keyboard focus, narrow layouts and reduced motion. The marketing-site hero, photographs, effects and site-specific gate are out of scope for this local workspace; the verification above used the actual desktop WebView. The test establishes readiness without the fixture server; whole-machine offline, production downloads, and Linux/macOS rendering still need their own acceptance runs.
