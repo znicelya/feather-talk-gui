@@ -10,6 +10,8 @@
 
 **Spec:** [已确认设计](../specs/2026-11-17-feathertalk-rust-migration-design.md)。执行者先读设计再读本计划。全部相对路径以 `feather-talk-gui/` 为根目录。
 
+**当前进度（2026-11-19）：** Task 1–11 已完成并经过审查。Task 12 的 worker 和资源绑定已提交，Windows CPU 与 RTX 2060 CUDA 已用短素材跑通训练、取消保存和重启后导出；正在补验训练步内取消、训练仍运行时强制退出和恢复。详见 [Task 12 阶段计划](2026-11-18-feathertalk-worker-stages.md)及[实测记录](../../validation/installed-worker.md)。下一项是 Task 13 的 Tauri 桌面接入。应用界面、多平台和其他显卡实机验收、真实素材效果、安装及整机断网验证仍待完成。
+
 ## Global Constraints
 
 - 训练与推理均使用 Burn；GPU 必须在对应显卡实际执行，Intel Mac 使用 CPU。
@@ -198,13 +200,13 @@ Rust 中标注为 `Result<T>` 的自有接口均使用 core 的 `type Result<T> 
 
 **Files:** Create `crates/feathertalk-worker/{Cargo.toml,src/main.rs,src/runtime.rs,src/transport.rs,tests/worker_protocol.rs}`、`src-tauri/src/worker_host.rs`、`src-tauri/tests/worker_host.rs`。
 
-**Interfaces:** `WorkerRuntime::handle(request: WorkerRequest) -> Result<()>`；`WorkerHost::spawn(component: &Path, context: WorkerContext) -> Result<Self>`；`start(&mut self, task_id: TaskId, job: JobSpec) -> Result<()>`、`cancel(&mut self, task_id: TaskId) -> Result<()>`、`next_event(&mut self) -> Result<Option<WorkerEvent>>`。`WorkerContext` 提供项目/资产/媒体工具路径和协议版本；实际计算调用 Task 8/9/10 接口。
+**Interfaces:** `WorkerRuntime::handle(request: WorkerRequest) -> Result<()>`；`WorkerHost::spawn(component: &Path, context: WorkerContext) -> Result<Self>`；`start(&mut self, task_id: TaskId, job: JobSpec) -> Result<()>`、`cancel(&mut self, task_id: TaskId) -> Result<()>`、`next_event(&mut self, timeout: Duration) -> Result<HostPoll>`，区分事件、超时和会话结束。`ResourceManager::bind_worker(&ResourceSelection, ProjectBinding, &JobSpec) -> Result<InstalledWorker>` 绑定已校验的组件与项目，再通过 `InstalledWorker::spawn` 启动。`WorkerContext` 提供项目/资产/媒体工具路径和协议版本；实际计算调用 Task 8/9/10 接口。
 
-- [ ] **Step 1:** 进程级测试 `hello_and_start_cancel_roundtrip`、`second_heavy_job_rejected`、`stale_or_wrong_task_event_rejected`、`crash_preserves_gui_error_context`；覆盖 stdout 分片/多行、超大消息、协议版本不符，取消消息在计算中可被读到，stderr 不被解析成事件；异常退出带最后阶段及日志。关键断言：`assert_eq!(second_start.unwrap_err().code, ErrorCode::Busy); assert_eq!(terminal_event_count, 1);`。
-- [ ] **Step 2:** `cargo test -p feathertalk-worker --features flex --test worker_protocol` 和 `cargo test -p feather-talk-gui --test worker_host`，预期 worker/host 缺失 FAIL。
-- [ ] **Step 3:** 实现一行一个 JSON、协议版本1、单条消息上限1MiB、独立控制读取/计算与事件发射；任务 ID 和 seq 单调约束，终态只提交一次。Windows 隐藏控制台；FFmpeg/worker 子进程生命周期受控，正常取消优先安全保存，异常退出恢复到最后已提交 checkpoint。默认 CPU worker 可独立运行，GPU worker 仅启用对应编译 feature。
+- [x] **Step 1:** 编写进程协议和宿主测试，覆盖握手、重复开始、错发/迟到事件、偏长或分片消息、控制流拥塞时的取消、stderr 分离与异常退出。关键断言是重复开始返回 `Busy`，一个任务最多只有一个终态。真实训练边界由安装包测试验证。
+- [x] **Step 2:** 用有界消息、任务事件归属和取消等回归测试复现缺失或错误行为，针对修复保存前后的结果；见 Task 12 阶段记录。
+- [x] **Step 3:** 实现一行一个 JSON、协议版本 1、单条消息上限 1 MiB、独立控制读取/计算与事件发射。事件先按已接收任务 ID 归属，seq 在每个 worker 会话严格递增，终态只提交一次。Windows 隐藏控制台；FFmpeg/worker 子进程生命周期受控，正常取消优先安全保存，异常退出恢复到最后已提交 checkpoint。默认 CPU worker 可独立运行，GPU worker 仅启用对应编译 feature。
 - [ ] **Step 4:** 重跑进程测试，预期 PASS；直接发送一份真实 Train/Generate JobSpec 完成离线流程，再强制结束 worker，host 仍能列出旧检查点并启动新 worker。
-- [ ] **Step 5:** 提交 `feat: isolate serialized training and export jobs in Rust workers`。
+- [ ] **Step 5:** 归档分阶段提交与独立审查结论，并关闭 Task 12。进程实现与安装包绑定已分别提交；安装包阶段复核仍在进行。
 
 ## Task 13: Tauri 项目服务与类型化命令桥接
 
