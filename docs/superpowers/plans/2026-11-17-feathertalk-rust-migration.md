@@ -10,7 +10,7 @@
 
 **Spec:** [已确认设计](../specs/2026-11-17-feathertalk-rust-migration-design.md)。执行者先读设计再读本计划。全部相对路径以 `feather-talk-gui/` 为根目录。
 
-**当前进度（2026-11-19）：** Task 1–11 已完成并经过审查。Task 12 的 worker 和资源绑定已提交，Windows CPU 与 RTX 2060 CUDA 已用短素材跑通训练、取消保存和重启后导出；正在补验训练步内取消、训练仍运行时强制退出和恢复。详见 [Task 12 阶段计划](2026-11-18-feathertalk-worker-stages.md)及[实测记录](../../validation/installed-worker.md)。下一项是 Task 13 的 Tauri 桌面接入。应用界面、多平台和其他显卡实机验收、真实素材效果、安装及整机断网验证仍待完成。
+**当前进度（2026-11-19）：** Task 1–12 已完成并经过审查。Windows CPU 与 RTX 2060 CUDA 短素材训练、取消保存及重启导出已通过；RTX 2060 上也已验证训练步内取消、续训中强制退出及恢复。详见 [Task 12 阶段计划](2026-11-18-feathertalk-worker-stages.md)及[实测记录](../../validation/installed-worker.md)。正在接入 Task 13 的 Tauri 项目与任务服务。应用界面、多平台和其他显卡实机验收、真实素材效果、安装及整机断网验证仍待完成。
 
 ## Global Constraints
 
@@ -205,14 +205,14 @@ Rust 中标注为 `Result<T>` 的自有接口均使用 core 的 `type Result<T> 
 - [x] **Step 1:** 编写进程协议和宿主测试，覆盖握手、重复开始、错发/迟到事件、偏长或分片消息、控制流拥塞时的取消、stderr 分离与异常退出。关键断言是重复开始返回 `Busy`，一个任务最多只有一个终态。真实训练边界由安装包测试验证。
 - [x] **Step 2:** 用有界消息、任务事件归属和取消等回归测试复现缺失或错误行为，针对修复保存前后的结果；见 Task 12 阶段记录。
 - [x] **Step 3:** 实现一行一个 JSON、协议版本 1、单条消息上限 1 MiB、独立控制读取/计算与事件发射。事件先按已接收任务 ID 归属，seq 在每个 worker 会话严格递增，终态只提交一次。Windows 隐藏控制台；FFmpeg/worker 子进程生命周期受控，正常取消优先安全保存，异常退出恢复到最后已提交 checkpoint。默认 CPU worker 可独立运行，GPU worker 仅启用对应编译 feature。
-- [ ] **Step 4:** 重跑进程测试，预期 PASS；直接发送一份真实 Train/Generate JobSpec 完成离线流程，再强制结束 worker，host 仍能列出旧检查点并启动新 worker。
-- [ ] **Step 5:** 归档分阶段提交与独立审查结论，并关闭 Task 12。进程实现与安装包绑定已分别提交；安装包阶段复核仍在进行。
+- [x] **Step 4:** 进程和宿主测试通过。用 Windows CPU 与 RTX 2060 CUDA 的已校验安装包完成真实训练、取消保存和重启导出；在 RTX 2060 上续训并于发布 step 2 后强制结束仍在运行的训练，宿主报告该检查点，新进程读取并导出通过 FFprobe 验证的 MP4。
+- [x] **Step 5:** 归档分阶段提交与独立审查结论。进程和宿主修复提交 `b1ab4df`，安装包绑定提交 `4b374b2`，资源就绪与训练边界验证提交 `0a467ff`。两个阶段均通过独立复核。
 
 ## Task 13: Tauri 项目服务与类型化命令桥接
 
 **Files:** Create `src-tauri/src/{state.rs,projects.rs,commands/mod.rs,commands/projects.rs,commands/jobs.rs,commands/resources.rs,commands/devices.rs}`、`src-tauri/tests/app_service.rs`、`src/lib/{contracts.ts,api.ts,events.ts}`；Modify `src-tauri/src/lib.rs`、`src-tauri/Cargo.toml`、`src-tauri/capabilities/default.json`、`src-tauri/tauri.conf.json`、`crates/feathertalk-core/src/protocol.rs`（任务快照与指标页）。
 
-**Interfaces:** 下列 Commands 的结果均包裹 core Result：`list_projects() -> Vec<ProjectSummary>`、`create_project(NewProject) -> ProjectSummary`、`get_project(ProjectId) -> ProjectManifest`、`list_devices() -> Vec<DeviceDescriptor>`、`get_resources() -> ResourceInventory`、`prepare_resources(ResourceSelection) -> TaskId`、`start_training(TrainRequest) -> TaskId`、`start_generation(GenerateRequest) -> TaskId`、`cancel_task(TaskId) -> ()`、`get_task() -> Option<TaskSnapshot>`、`read_metrics(ProjectId, run_id: TrainingRunId, after_step: Option<u64>, limit: usize) -> MetricPage`。命令委托 AppState 同名方法，`AppState::snapshot(&self) -> Result<Option<TaskSnapshot>>` 对应 get_task。`list_devices` 使用 worker Ready 中的 core DeviceDescriptor，不在 Tauri 主进程引入 Burn 计算。前端 `api` 导出同名 camelCase 包装；事件名固定 `feathertalk://task`，仅转发有任务 ID 的任务事件。`TaskSnapshot` 含 task_id、project_id、run_id（生成时为空）、状态、最近 seq、进度、指标与可选错误；MetricPage 为有界指标页与下一 step 游标。
+**Interfaces:** 下列 Commands 的结果均包裹 core Result：`list_projects() -> Vec<ProjectSummary>`、`create_project(NewProject) -> ProjectSummary`、`get_project(ProjectId) -> ProjectManifest`、`list_devices() -> Vec<DeviceDescriptor>`、`get_resources(TargetPlatform) -> ResourceInventory`、`prepare_resources(ResourceSelection) -> TaskId`、`start_training(TrainRequest) -> TaskId`、`start_generation(GenerateRequest) -> TaskId`、`cancel_task(TaskId) -> ()`、`get_task() -> Option<TaskSnapshot>`、`read_metrics(MetricsPageRequest) -> MetricsPage`。命令委托 AppState，`AppState::snapshot(&self) -> Result<Option<TaskSnapshot>>` 对应 get_task。`list_devices` 使用 worker Ready 中的 core DeviceDescriptor，不在 Tauri 主进程引入 Burn 计算。前端 `api` 导出 camelCase 包装；事件名固定 `feathertalk://task`，仅转发有任务 ID 的任务事件。快照保留任务、项目、训练 run、状态、最近 seq、进度、指标、已提交检查点与错误；资源任务没有项目，生成没有训练 run。指标页沿用 core 的 `offset`、`limit`、`next_offset`，按该 run 的持久化记录分页。
 
 - [ ] **Step 1:** `app_service` 写 `double_start_has_one_owner`、`reconnect_returns_snapshot`、`project_switch_does_not_reassign_events`、`unicode_project_roundtrip`；从同一公共 JSON fixture 检查 Rust/TS 事件契约；项目损坏返回具体路径/恢复方向。关键断言：`assert_eq!(app.snapshot()?.unwrap().task_id, first_id); assert_eq!(second_start.unwrap_err().code, ErrorCode::Busy);`。
 - [ ] **Step 2:** `cargo test -p feather-talk-gui --test app_service`，预期服务接口未实现 FAIL。
