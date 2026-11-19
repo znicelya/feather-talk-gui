@@ -17,8 +17,22 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
+    sync::Mutex,
 };
 struct Observe;
+#[derive(Default)]
+struct ExportProgress(Mutex<Vec<(String, u64)>>);
+impl TaskObserver for ExportProgress {
+    fn emit(&self, event: EventPayload) -> Result<()> {
+        if let EventPayload::Progress {
+            stage, completed, ..
+        } = event
+        {
+            self.0.lock().unwrap().push((stage, completed));
+        }
+        Ok(())
+    }
+}
 struct CancelAfterFrame(Cancellation);
 impl TaskObserver for CancelAfterFrame {
     fn emit(&self, event: EventPayload) -> Result<()> {
@@ -155,18 +169,36 @@ fn actual_demo_offline_same_checkpoint() {
         model_ref: reference.clone(),
         device: DevicePolicy::Auto,
     };
+    let progress = ExportProgress::default();
     let result = generate(
         &request,
         &prepared,
         &assets,
         &tools,
         &device,
-        &Observe,
+        &progress,
         &Cancellation::new(),
     )
     .unwrap();
     eprintln!("ACTUAL EXPORT {result:?}");
     assert_eq!(result.video_frames, 3);
+    let stages = progress.0.into_inner().unwrap();
+    assert_eq!(
+        stages
+            .iter()
+            .map(|(stage, count)| (stage.as_str(), *count))
+            .collect::<Vec<_>>(),
+        [
+            ("audio-decode", 0),
+            ("audio-features", 0),
+            ("render", 0),
+            ("render", 1),
+            ("render", 2),
+            ("render", 3),
+            ("encode", 0)
+        ],
+        "An actual export should report preparation, rendering and final encoding in order"
+    );
     if backend == "Cuda" {
         let old = fs::read(&result.output_path).unwrap();
         let cancel = Cancellation::new();

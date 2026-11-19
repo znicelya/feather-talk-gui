@@ -61,6 +61,11 @@ pub fn generate(
         .unwrap_or(Path::new("."));
     let stage = process::Staging::new(parent)?;
     let pcm = stage.0.join("audio.f32");
+    observer.emit(EventPayload::Progress {
+        stage: "audio-decode".into(),
+        completed: 0,
+        total: None,
+    })?;
     let mut command = Command::new(&tools.ffmpeg);
     command
         .args(["-nostdin", "-y", "-v", "error", "-i"])
@@ -77,7 +82,13 @@ pub fn generate(
             "f32le",
         ])
         .arg(&pcm);
-    process::run(&mut command, cancel)?;
+    process::run(&mut command, cancel).map_err(|mut error| {
+        error.stage = "audio-decode".into();
+        if error.code == ErrorCode::EncodeFailed {
+            error.actions.push("Play the driving audio to check it opens, or export it as a WAV file and try again".into());
+        }
+        error
+    })?;
     let mut source = session::FileAudioSource::open(&pcm)?;
     let mut samples = vec![];
     while let Some(batch) = source.read(session::AUDIO_BATCH_LIMIT)? {
@@ -111,6 +122,11 @@ pub fn generate(
             "Driving audio produces zero video frames; supply longer audio",
         ));
     }
+    observer.emit(EventPayload::Progress {
+        stage: "render".into(),
+        completed: 0,
+        total: Some(features.video_frames as u64),
+    })?;
     let mut probe = Command::new(&tools.ffprobe);
     probe
         .args(["-v", "error", "-show_streams", "-of", "json"])
@@ -184,7 +200,15 @@ pub fn generate(
             total: Some(features.video_frames as u64),
         })?;
     }
-    let output_path = sink.finish(cancel)?;
+    observer.emit(EventPayload::Progress {
+        stage: "encode".into(),
+        completed: 0,
+        total: None,
+    })?;
+    let output_path = sink.finish(cancel).map_err(|mut error| {
+        error.stage = "encode".into();
+        error
+    })?;
     Ok(ExportResult {
         output_path,
         video_frames: features.video_frames as u64,

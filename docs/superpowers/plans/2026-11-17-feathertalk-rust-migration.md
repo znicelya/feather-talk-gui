@@ -10,7 +10,7 @@
 
 **Spec:** [已确认设计](../specs/2026-11-17-feathertalk-rust-migration-design.md)。执行者先读设计再读本计划。全部相对路径以 `feather-talk-gui/` 为根目录。
 
-**当前进度（2026-11-19）：** Task 1–12 已完成并经过审查。Windows CPU 与 RTX 2060 CUDA 短素材训练、取消保存及重启导出已通过，见 [Task 12 实测记录](../../validation/installed-worker.md)。Task 13 的 [Tauri 桥接](../../validation/desktop-bridge.md) 和 Task 14–15 的 [shadcn/ui 桌面界面与训练](../../validation/desktop-ui.md) 已完成 Windows 原生验收。Task 16 正在验证音频导出。其他显卡与系统实机验收、真实素材效果、安装及整机断网验证仍待完成。
+**当前进度（2026-11-19）：** Task 1–12 已完成并经过审查。Windows CPU 与 RTX 2060 CUDA 短素材训练、取消保存及重启导出已通过，见 [Task 12 实测记录](../../validation/installed-worker.md)。Task 13 的 [Tauri 桥接](../../validation/desktop-bridge.md) 和 Task 14–16 的 [shadcn/ui 桌面界面、训练和音频导出](../../validation/desktop-ui.md) 已通过 Windows 原生验收。继续测量各后端性能，准备多平台安装包及验收工具。其他显卡与系统实机验收、真实素材效果和整机断网验证仍待完成。
 
 ## Global Constraints
 
@@ -254,11 +254,11 @@ Rust 中标注为 `Result<T>` 的自有接口均使用 core 的 `type Result<T> 
 
 **Interfaces:** 页面调用 `api.startGeneration(GenerateRequest): Promise<TaskId>`；成功仅采纳当前任务 Completed 中的 `ExportResult`；通过已有本地文件访问能力预览成品并打开目录。
 
-- [ ] **Step 1:** 写 `generation.test.tsx`：未训练人物不可生成；训练活动时生成受限；音频/输出选择保持 Unicode；取消不显示旧事件的成品；ffmpeg 失败/磁盘不足展示不同排查动作；成功显示真实输出位置并可再次生成。未训练/已有活动任务 fixture 关键断言：`expect(api.startGeneration).not.toHaveBeenCalled();`，函数使用 Vitest spy。
-- [ ] **Step 2:** `pnpm test -- --run src/features/generation`，预期页面行为缺失 FAIL。
-- [ ] **Step 3:** 实现人物检查点选择、音频与输出位置、准备/特征/生成/封装进度、取消与完成播放；覆盖目标文件前使用正常保存交互，不把未完成临时文件作为可播放结果。
-- [ ] **Step 4:** 重跑测试和 `pnpm build`；在 Tauri 执行完整训练→生成→播放→再次生成，并验证活动任务限制和失败后的重新开始。
-- [ ] **Step 5:** 提交 `feat: add offline audio-to-video generation workflow`。
+- [x] **Step 1:** `generation.test.tsx` 覆盖未训练及忙碌禁用、Unicode 路径、取消后拒绝旧成品、编码和磁盘错误建议以及重试时重选输出。Rust 实际导出测试记录阶段顺序和取消保留原成品。
+- [x] **Step 2:** 首次前端测试确认页面缺失；实际 CPU 导出观察到原引擎缺少音频读取及封装进度（`.artifacts/task15/generation-progress-red.log`）。
+- [x] **Step 3:** 用 shadcn/ui 接入检查点选择、原生音频和保存对话框、分阶段进度、取消、精确授权的成品预览和打开目录。失败保持所选音频；再次生成要求重新确认保存位置。损坏音频显示解码阶段和原始错误。
+- [x] **Step 4:** 前端测试、构建与 RTX 2060 Rust 生成回归通过。Windows WebView2 使用 Task 15 刚训练的检查点导出并播放 MP4；损坏 WAV 失败后未产生输出、更换音频和保存位置后再次成功。详见 [导出验收](../../validation/desktop-ui.md#audio-to-mp4-on-windows)。
+- [x] **Step 5:** 提交 `feat: add offline audio-to-video generation workflow`。
 
 ## Task 17: 全链路基准与按设备启用优化
 

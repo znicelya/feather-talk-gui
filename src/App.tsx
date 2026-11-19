@@ -1,7 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
-import { FolderIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AppShell, type View } from "./components/AppShell";
 import { ErrorDetails } from "./components/ErrorDetails";
@@ -17,6 +15,7 @@ import { useTaskControl } from "./lib/task-control";
 import "./App.css";
 
 const TrainingPage = lazy(() => import("./features/training/TrainingPage").then(({ TrainingPage }) => ({ default: TrainingPage })));
+const GenerationPage = lazy(() => import("./features/generation/GenerationPage").then(({ GenerationPage }) => ({ default: GenerationPage })));
 
 export default function App() {
   const [view, setView] = useState<View>("projects");
@@ -56,7 +55,8 @@ export default function App() {
 
   const taskOwnerId = task.snapshot?.project_id;
   const owner = taskOwnerId ? projects.projects.find(({ id }) => id === taskOwnerId)?.name ?? taskOwnerId : null;
-  const localTaskError = !!project && taskOwnerId === project.id && view === "training" && task.snapshot?.job === "train";
+  const localTaskError = !!project && taskOwnerId === project.id && (view === "training" && task.snapshot?.job === "train" ||
+    view === "generation" && task.snapshot?.job === "generate");
   return <AppShell view={view} onNavigate={navigate} project={project} task={<TaskStatus
     task={task.snapshot} owner={owner} onCancel={() => void task.cancel()} canCancel={task.canCancel} connected={task.connected}
   />}>
@@ -73,16 +73,11 @@ export default function App() {
         resourcesReady={hasReadyResources(resource.checks, device)} resourcesLoading={resource.loading}
         openProjects={() => navigate("projects")} openResources={() => navigate("resources")} />
     </Suspense>}
-    {view === "generation" && <div className="page-flow">
-      <div className="page-heading"><div><h1>视频生成</h1>
-        <p>{project ? `当前人物：${project.name}` : "在人物项目中创建或选择人物。"}</p></div></div>
-      <Empty>
-        <EmptyHeader><EmptyMedia variant="icon"><FolderIcon /></EmptyMedia>
-          <EmptyTitle>{project ? "此页面尚未开放" : "未选择人物"}</EmptyTitle>
-          {project && <EmptyDescription>可以查看人物信息与本机资源。</EmptyDescription>}
-        </EmptyHeader>
-        <EmptyContent><Button type="button" variant="outline" size="lg" onClick={() => navigate("projects")}>查看人物项目</Button></EmptyContent>
-      </Empty>
-    </div>}
+    {view === "generation" && <Suspense fallback={<Skeleton className="h-48 w-full" aria-label="正在打开生成页面" />}>
+      <GenerationPage project={project} checkpoints={checkpoints} checkpointId={checkpointId} selectCheckpoint={selectCheckpoint}
+        manifestError={loaded?.error ?? null} device={device} busy={task.busy} task={task.snapshot} start={task.start}
+        resourcesReady={hasReadyResources(resource.checks, device)} openProjects={() => navigate("projects")}
+        openTraining={() => navigate("training")} openResources={() => navigate("resources")} />
+    </Suspense>}
   </AppShell>;
 }

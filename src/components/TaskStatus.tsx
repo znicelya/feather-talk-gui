@@ -9,7 +9,7 @@ const statusLabel: Record<Status, string> = {
   queued: "正在准备", running: "运行中", cancelling: "正在取消", completed: "已完成", cancelled: "已取消", failed: "失败",
 };
 const stages: Record<string, string> = {
-  "audio-features": "提取音频特征", render: "生成人物画面", encode: "封装视频",
+  "audio-decode": "读取驱动音频", "audio-features": "提取音频特征", render: "生成人物画面", encode: "封装视频",
   training: "训练模型", "training-checkpoint": "写入检查点",
   "verify-components": "校验资源", "prepared-cache": "读取预处理缓存", "canonical-media": "规范化素材",
   "frame-landmarks": "分析人脸", prepared: "素材已准备",

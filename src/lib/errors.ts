@@ -21,6 +21,9 @@ const descriptions: Record<ErrorCode, [string, string?]> = {
 };
 
 export function errorDescription(error: AppError) {
+  if (error.code === "encode_failed" && error.stage === "audio-decode") {
+    return ["无法读取驱动音频", "用播放器确认音频可用，或转存为 WAV 后重试。"] as const;
+  }
   return descriptions[error.code] ?? descriptions.internal;
 }
 
