@@ -8,8 +8,9 @@
     "build": "tsc && vite build",
     "test": "vitest",
     "test:contracts": "node --test tests/desktop-contract.test.mjs",
+    "test:packages": "node --test tools/package/bundle.test.mjs",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "node tools/package/tauri.mjs"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.3.0",

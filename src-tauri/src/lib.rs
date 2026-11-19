@@ -73,7 +73,7 @@ fn desktop_state(handle: &tauri::AppHandle) -> Result<AppState> {
     let resources = ResourceManager::new(data.join("resources"), catalog)
         .map_err(|e| catalog_error(catalog_source, &e))?;
     if let Some(root) = bundled {
-        resources.install_bundled_cpu(&root);
+        resources.install_bundled(&root);
     }
     let handle = handle.clone();
     Ok(AppState::new(projects, resources, move |event| {

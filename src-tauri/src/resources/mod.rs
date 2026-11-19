@@ -1,4 +1,6 @@
 //! Explicit resource preparation. Inventory and identity resolution never use HTTP.
+#[cfg(test)]
+mod bootstrap_tests;
 pub mod catalog;
 mod download;
 mod installed_worker;
@@ -8,6 +10,7 @@ use feathertalk_core::*;
 use fs2::FileExt;
 pub use installed_worker::InstalledWorker;
 use std::{
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
     sync::Mutex,
@@ -21,53 +24,52 @@ pub struct ResourceManager {
     mutation: Mutex<()>,
 }
 impl ResourceManager {
-    /// Seed only the matching CPU worker and probe from the app's packaged resources.
-    /// Imported bytes enter the same verified cache used by every other worker.
-    pub(crate) fn install_bundled_cpu(&self, root: &Path) {
-        if !root.is_dir() {
-            return;
-        }
-        let Some(selection) = self
-            .local_selections()
-            .into_iter()
-            .find(|s| s.target.backend == "cpu")
-        else {
+    /// Seed the native selections in the active catalog from the packaged resource tree.
+    pub(crate) fn install_bundled(&self, root: &Path) {
+        let Ok(root) = root.canonicalize() else {
             return;
         };
-        for pin in selection
-            .resources
-            .iter()
-            .filter(|p| matches!(p.id.as_str(), "worker" | "probe"))
-        {
-            let seed = || {
-                catalog::token(&pin.id)?;
-                catalog::token(&pin.version)?;
-                let path = root.join(&pin.id).join(&pin.version).join("manifest.json");
-                if !path.is_file() || self.status(pin, &selection.target).ready {
-                    return Ok(());
-                }
-                let root = root.canonicalize().map_err(fail)?;
-                let manifest = inventory::contained(&root, &path)?;
-                let component = self.find(pin)?;
-                let role = installed_worker::required_roles(&selection.target)
+        let mut seeded = BTreeSet::new();
+        for selection in self.local_selections() {
+            for pin in &selection.resources {
+                let Some(role) = installed_worker::required_roles(&selection.target)
                     .find(|role| role.id == pin.id)
-                    .ok_or_else(|| fail("Unknown bootstrap role"))?;
-                role.validate(&component, &selection.target)?;
-                inventory::verify_file(
-                    manifest
-                        .parent()
-                        .ok_or_else(|| fail("Missing bundled component directory"))?,
-                    Path::new("manifest.json"),
-                    &component.files()[Path::new("manifest.json")],
-                )?;
-                self.import_local(&manifest)
-            };
-            if let Err(error) = seed() {
-                // The resource view remains available to report or repair incomplete resources.
-                eprintln!(
-                    "Packaged {} could not enter the resource cache: {error}",
-                    pin.id
-                );
+                else {
+                    continue;
+                };
+                let mut seed = || {
+                    catalog::token(&pin.id)?;
+                    catalog::token(&pin.version)?;
+                    let source = root.join(&pin.id).join(&pin.version);
+                    if !source.join("manifest.json").is_file() {
+                        return Ok(());
+                    }
+                    let component = self
+                        .catalog
+                        .components
+                        .iter()
+                        .find(|c| &c.pin == pin)
+                        .ok_or_else(|| fail("Bundled pin is absent from the active catalog"))?;
+                    role.validate(component, &selection.target)?;
+                    if !seeded.insert((&component.pin.id, &component.pin.version))
+                        || self
+                            .verify_installed(&self.destination(component), component)
+                            .is_ok()
+                    {
+                        return Ok(());
+                    }
+                    let source = inventory::contained(&root, &source)?;
+                    let _guard = self.mutation.lock().map_err(fail)?;
+                    let _cache_lock = self.cache_lock()?;
+                    self.install(component, Some(&source), &Silent, &Cancellation::new())
+                };
+                if let Err(error) = seed() {
+                    // Keep the resource screen available if one packaged copy is damaged.
+                    eprintln!(
+                        "Packaged {}/{} could not enter the resource cache: {error}",
+                        pin.id, pin.version
+                    );
+                }
             }
         }
     }

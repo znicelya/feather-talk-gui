@@ -27,8 +27,8 @@ export default defineConfig(() => ({
         }
       : undefined,
     watch: {
-      // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      // Build inputs and cache staging can be large and must be free to rename on Windows.
+      ignored: ["**/src-tauri/**", "**/.artifacts/**", "**/target/**"],
     },
   },
 }));
