@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "targets": [
+    {"triple": "x86_64-pc-windows-msvc", "os": "windows", "architecture": "x86_64", "minimum": "Windows 11", "minimum_version": "10.0.22000", "bundles": ["nsis"], "backends": ["cpu", "cuda", "vulkan"]},
+    {"triple": "x86_64-unknown-linux-gnu", "os": "linux", "architecture": "x86_64", "minimum": "Ubuntu 24.04", "minimum_version": "24.04", "distribution": "ubuntu", "bundles": ["deb", "appimage"], "backends": ["cpu", "cuda", "vulkan"]},
+    {"triple": "aarch64-apple-darwin", "os": "macos", "architecture": "aarch64", "minimum": "macOS 13", "minimum_version": "13.0", "bundles": ["app", "dmg"], "backends": ["cpu", "metal"]},
+    {"triple": "x86_64-apple-darwin", "os": "macos", "architecture": "x86_64", "minimum": "macOS 13", "minimum_version": "13.0", "bundles": ["app", "dmg"], "backends": ["cpu"]}
+  ],
+  "required_paths": [
+    {"id": "windows-nvidia", "target": "x86_64-pc-windows-msvc", "hardware": "nvidia", "backends": ["cuda", "vulkan"]},
+    {"id": "windows-amd", "target": "x86_64-pc-windows-msvc", "hardware": "amd", "backends": ["vulkan"]},
+    {"id": "windows-intel-arc", "target": "x86_64-pc-windows-msvc", "hardware": "intel_arc", "backends": ["vulkan"]},
+    {"id": "windows-cpu", "target": "x86_64-pc-windows-msvc", "hardware": "cpu", "backends": ["cpu"]},
+    {"id": "linux-nvidia", "target": "x86_64-unknown-linux-gnu", "hardware": "nvidia", "backends": ["cuda", "vulkan"]},
+    {"id": "linux-amd", "target": "x86_64-unknown-linux-gnu", "hardware": "amd", "backends": ["vulkan"]},
+    {"id": "linux-intel-arc", "target": "x86_64-unknown-linux-gnu", "hardware": "intel_arc", "backends": ["vulkan"]},
+    {"id": "linux-cpu", "target": "x86_64-unknown-linux-gnu", "hardware": "cpu", "backends": ["cpu"]},
+    {"id": "macos-apple-silicon", "target": "aarch64-apple-darwin", "hardware": "apple", "backends": ["metal"]},
+    {"id": "macos-intel-cpu", "target": "x86_64-apple-darwin", "hardware": "cpu", "backends": ["cpu"]}
+  ]
+}

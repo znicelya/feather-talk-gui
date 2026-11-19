@@ -21,6 +21,56 @@ pub struct ResourceManager {
     mutation: Mutex<()>,
 }
 impl ResourceManager {
+    /// Seed only the matching CPU worker and probe from the app's packaged resources.
+    /// Imported bytes enter the same verified cache used by every other worker.
+    pub(crate) fn install_bundled_cpu(&self, root: &Path) {
+        if !root.is_dir() {
+            return;
+        }
+        let Some(selection) = self
+            .local_selections()
+            .into_iter()
+            .find(|s| s.target.backend == "cpu")
+        else {
+            return;
+        };
+        for pin in selection
+            .resources
+            .iter()
+            .filter(|p| matches!(p.id.as_str(), "worker" | "probe"))
+        {
+            let seed = || {
+                catalog::token(&pin.id)?;
+                catalog::token(&pin.version)?;
+                let path = root.join(&pin.id).join(&pin.version).join("manifest.json");
+                if !path.is_file() || self.status(pin, &selection.target).ready {
+                    return Ok(());
+                }
+                let root = root.canonicalize().map_err(fail)?;
+                let manifest = inventory::contained(&root, &path)?;
+                let component = self.find(pin)?;
+                let role = installed_worker::required_roles(&selection.target)
+                    .find(|role| role.id == pin.id)
+                    .ok_or_else(|| fail("Unknown bootstrap role"))?;
+                role.validate(&component, &selection.target)?;
+                inventory::verify_file(
+                    manifest
+                        .parent()
+                        .ok_or_else(|| fail("Missing bundled component directory"))?,
+                    Path::new("manifest.json"),
+                    &component.files()[Path::new("manifest.json")],
+                )?;
+                self.import_local(&manifest)
+            };
+            if let Err(error) = seed() {
+                // The resource view remains available to report or repair incomplete resources.
+                eprintln!(
+                    "Packaged {} could not enter the resource cache: {error}",
+                    pin.id
+                );
+            }
+        }
+    }
     pub fn local_selections(&self) -> Vec<ResourceSelection> {
         let mut selections = self
             .catalog

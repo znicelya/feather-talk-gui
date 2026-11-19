@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "kind": "hardware",
+  "path": "windows-intel-arc",
+  "target": "x86_64-pc-windows-msvc",
+  "system": { "os": "windows", "architecture": "x86_64", "version": "" },
+  "device": { "backend": "vulkan", "hardware": "intel_arc", "id": "", "name": "", "driver": "" },
+  "components": {
+    "worker": { "target": "x86_64-pc-windows-msvc", "backend": "vulkan", "version": "", "sha256": "" },
+    "probe": { "target": "x86_64-pc-windows-msvc", "backend": "vulkan", "version": "", "sha256": "" },
+    "media": { "target": "x86_64-pc-windows-msvc", "backend": "any", "version": "", "sha256": "" }
+  },
+  "models": { "feather_hubert": "", "scrfd_2_5g": "", "pfld_ghost_one": "", "vgg19": "", "mean_face": "" },
+  "media": { "source_sha256": "", "driving_audio_sha256": "", "python_reference_sha256": "" },
+  "checks": {
+    "install": { "status": "pending", "evidence": "" },
+    "first_start_download": { "status": "pending", "evidence": "" },
+    "train": { "status": "pending", "evidence": "" },
+    "resume": { "status": "pending", "evidence": "" },
+    "export": { "status": "pending", "evidence": "" },
+    "playback": { "status": "pending", "evidence": "" },
+    "offline": { "status": "pending", "evidence": "" },
+    "quality": { "status": "pending", "evidence": "" }
+  },
+  "offline_mode": "",
+  "catalog": { "url": "", "sha256": "", "production_download_verified": false }
+}

@@ -45,7 +45,8 @@ function publish(status: TaskSnapshot["status"], seq: number, payload: TaskEvent
 async function openTraining(buttonName = "一键训练") {
   render(<App />);
   fireEvent.click(screen.getByRole("button", { name: "训练" }));
-  const button = await screen.findByRole("button", { name: buttonName });
+  // The first navigation imports the lazy training page and its chart bundle.
+  const button = await screen.findByRole("button", { name: buttonName }, { timeout: 5000 });
   await waitFor(() => expect(button).toBeEnabled());
   return button;
 }

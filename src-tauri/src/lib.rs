@@ -10,7 +10,7 @@ use feathertalk_core::{AppError, ErrorCode, Result};
 use projects::ProjectStore;
 use resources::{Catalog, ResourceManager};
 use state::{AppState, CloseState, TASK_EVENT};
-use std::{fs, io};
+use std::{fs, io, path::Path};
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 
 fn desktop_state(handle: &tauri::AppHandle) -> Result<AppState> {
@@ -32,29 +32,49 @@ fn desktop_state(handle: &tauri::AppHandle) -> Result<AppState> {
         None => data,
     };
     let catalog_path = data.join("resource-catalog.json");
-    let catalog_error = |e: &dyn std::fmt::Display| {
+    let bundled = handle
+        .path()
+        .resolve("bootstrap", tauri::path::BaseDirectory::Resource)
+        .ok();
+    let catalog_error = |path: &Path, e: &dyn std::fmt::Display| {
         let mut error = AppError::new(
             ErrorCode::ResourceCorrupt,
             "resource-catalog",
             e.to_string(),
         );
-        error.evidence.push(catalog_path.display().to_string());
+        error.evidence.push(path.display().to_string());
         error
             .actions
             .push("Restore a valid resource catalog at this path.".into());
         error
     };
-    let catalog: Catalog = match fs::read(&catalog_path) {
-        Ok(data) => serde_json::from_slice(&data).map_err(|e| catalog_error(&e))?,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            serde_json::from_str(include_str!("../../resources/development-catalog.json"))
-                .map_err(|e| catalog_error(&e))?
+    let bundled_catalog = bundled.as_ref().map(|root| root.join("catalog.json"));
+    let mut loaded = None;
+    for path in std::iter::once(&catalog_path).chain(bundled_catalog.as_ref()) {
+        match fs::read(path) {
+            Ok(bytes) => {
+                loaded = Some((path, bytes));
+                break;
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(catalog_error(path, &e)),
         }
-        Err(e) => return Err(catalog_error(&e)),
-    };
+    }
+    let (catalog_source, bytes) = loaded
+        .as_ref()
+        .map(|(path, bytes)| (path.as_path(), bytes.as_slice()))
+        .unwrap_or((
+            Path::new("embedded development-catalog.json"),
+            include_bytes!("../../resources/development-catalog.json"),
+        ));
+    let catalog: Catalog =
+        serde_json::from_slice(bytes).map_err(|e| catalog_error(catalog_source, &e))?;
     let projects = ProjectStore::new(data.join("projects.json"))?;
-    let resources =
-        ResourceManager::new(data.join("resources"), catalog).map_err(|e| catalog_error(&e))?;
+    let resources = ResourceManager::new(data.join("resources"), catalog)
+        .map_err(|e| catalog_error(catalog_source, &e))?;
+    if let Some(root) = bundled {
+        resources.install_bundled_cpu(&root);
+    }
     let handle = handle.clone();
     Ok(AppState::new(projects, resources, move |event| {
         if let Err(error) = handle.emit_to("main", TASK_EVENT, event) {

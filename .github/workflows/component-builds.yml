@@ -1,0 +1,101 @@
+name: Desktop component builds
+
+on:
+  workflow_dispatch:
+    inputs:
+      gpu-components:
+        description: Also compile GPU workers (does not run hardware acceptance)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  bundle:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: windows-2025, target: x86_64-pc-windows-msvc }
+          - { runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
+          - { runner: macos-15, target: aarch64-apple-darwin }
+          - { runner: macos-15-intel, target: x86_64-apple-darwin }
+    runs-on: ${{ matrix.runner }}
+    env:
+      RUSTUP_TOOLCHAIN: '1.100.0'
+      FT_BUILD_TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.21.0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Linux bundle dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libfuse2t64
+      - run: rustup toolchain install 1.100.0 --profile minimal --target ${{ matrix.target }}
+      - run: pnpm install --frozen-lockfile
+      - name: Build CPU component and bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .artifacts/ci/reports
+          {
+            node tools/package/build-runtime.mjs --target "$FT_BUILD_TARGET" --backend cpu --output .artifacts/ci/staged
+            node tools/package/build-catalog.mjs --artifacts .artifacts/ci/staged --output .artifacts/ci/catalog/catalog.json --bundle-target "$FT_BUILD_TARGET"
+            pnpm tauri build --ci --no-sign --target "$FT_BUILD_TARGET" --config "$PWD/.artifacts/ci/catalog/tauri-overlay.json" -- --locked
+          } 2>&1 | tee .artifacts/ci/reports/build.log
+          python -B tools/acceptance/build_report.py --target "$FT_BUILD_TARGET" --bundles "target/$FT_BUILD_TARGET/release/bundle" --log .artifacts/ci/reports/build.log
+          tar -C "target/$FT_BUILD_TARGET/release" -czf .artifacts/ci/desktop-bundles.tar.gz bundle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-${{ matrix.target }}
+          include-hidden-files: true
+          if-no-files-found: error
+          path: |
+            .artifacts/ci/desktop-bundles.tar.gz
+            .artifacts/ci/catalog/catalog.json
+            .artifacts/ci/reports/
+
+  gpu-components:
+    if: inputs['gpu-components']
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: windows-2025, target: x86_64-pc-windows-msvc, backend: cuda }
+          - { runner: windows-2025, target: x86_64-pc-windows-msvc, backend: vulkan }
+          - { runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, backend: cuda }
+          - { runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, backend: vulkan }
+          - { runner: macos-15, target: aarch64-apple-darwin, backend: metal }
+    runs-on: ${{ matrix.runner }}
+    env:
+      RUSTUP_TOOLCHAIN: '1.100.0'
+      CUDARC_CUDA_VERSION: '12060'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: rustup toolchain install 1.100.0 --profile minimal --target ${{ matrix.target }}
+      - name: Build and archive runtime pair
+        shell: bash
+        env:
+          FT_BUILD_TARGET: ${{ matrix.target }}
+          FT_BUILD_BACKEND: ${{ matrix.backend }}
+        run: |
+          set -euo pipefail
+          node tools/package/build-runtime.mjs --target "$FT_BUILD_TARGET" --backend "$FT_BUILD_BACKEND" --output .artifacts/ci/staged
+          tar -C .artifacts/ci/staged -czf .artifacts/ci/runtime-pair.tar.gz "$FT_BUILD_TARGET/$FT_BUILD_BACKEND"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: component-${{ matrix.target }}-${{ matrix.backend }}
+          include-hidden-files: true
+          if-no-files-found: error
+          path: .artifacts/ci/runtime-pair.tar.gz

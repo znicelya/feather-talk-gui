@@ -10,7 +10,7 @@
 
 **Spec:** [已确认设计](../specs/2026-11-17-feathertalk-rust-migration-design.md)。执行者先读设计再读本计划。全部相对路径以 `feather-talk-gui/` 为根目录。
 
-**当前进度（2026-11-19）：** Task 1–12 已完成并经过审查。Windows CPU 与 RTX 2060 CUDA 短素材训练、取消保存及重启导出已通过，见 [Task 12 实测记录](../../validation/installed-worker.md)。Task 13 的 [Tauri 桥接](../../validation/desktop-bridge.md) 和 Task 14–16 的 [shadcn/ui 桌面界面、训练和音频导出](../../validation/desktop-ui.md) 已通过 Windows 原生验收。继续测量各后端性能，准备多平台安装包及验收工具。其他显卡与系统实机验收、真实素材效果和整机断网验证仍待完成。
+**当前进度（2026-11-19）：** Task 1–16 已完成，含 [Windows CPU/CUDA worker](../../validation/installed-worker.md)、[Tauri 桥接](../../validation/desktop-bridge.md) 与 [shadcn/ui 桌面流程](../../validation/desktop-ui.md)。Task 17 已完成本机 CUDA/Vulkan/Flex 同输入测量。Task 18 已复验 Windows NSIS 的空缓存首启，CPU 和 RTX 2060 Vulkan 的 release worker 均跑通从头训练、取消保存、重开续训及导出。B580 便携包已从新目录在 RTX 2060 复跑，待 Win11/B580 实测。正式首启下载、整机断网、真人效果和其余平台仍开放。见 [性能记录](../../validation/performance.md)、[平台矩阵](../../validation/platform-matrix.md) 与 [B580复跑步骤](../../validation/release-checklist.md)。
 
 ## Global Constraints
 
@@ -266,11 +266,13 @@ Rust 中标注为 `Result<T>` 的自有接口均使用 core 的 `type Result<T> 
 
 **Interfaces:** `run_benchmark(spec: &BenchmarkSpec, observer: &dyn TaskObserver) -> Result<BenchmarkReport>`；`select_backend(policy: &DevicePolicy, reports: &[BenchmarkReport]) -> Result<DeviceRequest>`。BenchmarkSpec 固定项目/素材/资源/工具/检查点路径、候选设备、精度、batch、warmup、repetitions 和优化开关，示例随工具说明保存。使用 Task 1 的 DevicePolicy；worker 有有效报告时调用 select_backend，无报告时仍调用 Task 3 的 resolve_device 并做初始能力验证，不改该函数签名。报告绑定模型/引擎/驱动/设备/精度/batch/输入身份，记录 validation_passed、cold_runs/warm_runs 原始样本、预处理、训练吞吐、特征提取、视觉与端到端导出、内存/显存可用测量。不能取得某指标时写 null 与原因。
 
-- [ ] **Step 1:** `performance_policy` 验证最快但数值验证失败的后端不被选择；驱动/模型变化使缓存失效；手动选择保留；热运行与冷启动分开；相同 batch 的比较和最大可用 batch 的结果不混为一个指标。CUDA 更快但 validation_passed=false 的 fixture 关键断言：`assert_eq!(selected.backend, BackendKind::Vulkan); assert!(!report.warm_runs.is_empty());`。
-- [ ] **Step 2:** `cargo test -p feathertalk-engine --features flex --test performance_policy`，预期策略缺失 FAIL。
+- [x] **Step 1:** `performance_policy` 验证最快但数值验证失败的后端不被选择、驱动或模型变化时报告不可复用、手动选择保留，以及同 batch 热测和冷启动分别处理。未知驱动的报告同样不会被当作有效缓存。
+- [x] **Step 2:** 首次 `cargo test -p feathertalk-engine --features flex --test performance_policy` 因模块缺失而失败。实现后 3 项策略测试通过，日志在 `.artifacts/task17/`。
 - [ ] **Step 3:** 实现基准 CLI、候选筛选与缓存；基准使用隔离的状态/输出，不改变用户模型与训练进度。在 RTX 2060 比较 CUDA/Vulkan、B580 测 Vulkan、CPU 比较合适后端。分别评估批量推理、有限静态视觉缓存、预取、融合/内核缓存、适用混合精度；每个优化先跑对应数值/梯度/恢复验证，再比较相同输入下多次端到端结果。通过热身后至少保留三次原始测量；只有效果门槛通过且可重复获益的策略默认启用。
 - [ ] **Step 4:** 重跑策略测试；运行 `cargo run --release -p feathertalk-engine --features vulkan --bin benchmark -- --spec .artifacts/benchmark-spec.json --output .artifacts/reports/benchmark-vulkan.json`，CUDA/CPU 对应替换 feature/spec。预期报告写实测设备与数据，不把缺失硬件标为支持已验证；优化开启/关闭均能正常训练、续训和生成。
 - [ ] **Step 5:** 提交 `perf: select validated backends and optimize measured workloads`，附可重放基准说明与小型结果摘要，不提交私人人物素材。
+
+执行记录：同一 release 程序在 Windows 10 的 RTX 2060（560.94）与 i5-10400 上各跑了 1 次冷测、1 次热身、3 次热测。CUDA 热训练步更快，Vulkan 在 29 帧短导出中更快。去掉了 worker 续训和生成的重复 Burn 恢复，已在 CPU/Vulkan release 验证。Vulkan 预取对照做了四轮独立进程测量，采样 loss 相同，记录进程工作集并保留原默认值。完整样本和测量边界见 [性能记录](../../validation/performance.md)。生产自动选择暂未接入报告缓存，其他设备、较长素材和其余优化仍待验证。
 
 ## Task 18: 多平台组件打包、干净环境与完整验收
 
@@ -278,11 +280,21 @@ Rust 中标注为 `Result<T>` 的自有接口均使用 core 的 `type Result<T> 
 
 **Interfaces:** `stage-components.mjs --target <triple> --backend <backend> --input <dir> --output <dir>`；`build-catalog.mjs --artifacts <dir> --output <json>`；`check_reports.py --matrix resources/targets.json --reports <dir> --require-complete`；内部 `validate_reports(matrix: dict, reports: list[dict], require_complete: bool) -> ValidationResult`，结果含 passed/missing/failures。每份报告含 OS/架构/显卡/驱动/实际后端、组件和模型身份、训练/恢复/生成/离线结果与日志路径。非完整模式允许报告环境尚未取得，完整发布检查必须拒绝缺失的必需项；platform-matrix.md 展示 JSON 目标与实际报告结果。
 
-- [ ] **Step 1:** 为报告检查器写 fixtures：编译通过但无 GPU 实测、Intel Mac 被错误标为 GPU、CPU 结果冒充 AMD、缺离线验收、错误 target 的 worker、缺均值脸、失效的资源地址均不得通过完整验收。关键断言：`assert not validate_reports(matrix, reports_without_gpu, True).passed`。运行 `python -m pytest tools/acceptance -q`，预期检查器缺失 FAIL。
-- [ ] **Step 2:** 实现 target 清单和构建/暂存：Windows NSIS、Linux deb/AppImage、macOS arm64/x86_64 app/dmg；CPU worker 随包保证基础执行，其他 worker/FFmpeg 通过校验组件管理交付。使用 Tauri externalBin 时按 target triple 命名，运行时从安装/资源路径明确解析，不依赖构建目录，参照 [Tauri 官方组件打包说明](https://v2.tauri.app/develop/sidecar/)。清单至少覆盖 Windows/Linux 各自 NVIDIA、AMD、Arc、CPU，以及 Apple Silicon GPU、Intel Mac CPU；同一硬件的候选后端比较与该硬件至少一条已验证执行路径分开记录。CI 只构建/测试/暂存产物；公开上传及正式发布在生产配置和授权齐备后进行。
+- [x] **Step 1:** 报告检查器针对仅编译、Intel Mac 错标 GPU、CPU 冒充 AMD、缺离线验收、错误 worker target、缺均值脸及无效资源地址均有测试。已记录缺失模块时的失败与实现后的通过结果；`--require-complete` 会拒绝缺失的发布验收。
+- [x] **Step 2:** 已实现 target 清单、组件暂存与 catalog 构建，配置 Windows NSIS、Linux deb/AppImage、macOS arm64/x86_64 app/dmg。CPU worker/probe 由 Tauri 资源目录随包导入，FFmpeg、GPU worker 和模型使用同一校验缓存；运行路径来自安装目录和缓存。CI 配置仅构建、测试、暂存，实际平台构建进度见 Step 3。
 - [ ] **Step 3:** 运行 `cargo fmt --all --check`、各已启用 feature 的针对性 Rust 集成测试、`pnpm test -- --run`、`pnpm build`、`pnpm tauri build`，预期目标平台构建和所需验证通过；CPU 检查在 CI 可执行，GPU 任务使用能实测对应硬件的环境。macOS 分发同时验证组件签名/公证、可执行权限及下载后实际启动；记录最低系统版本、编解码构建信息/notices。
 - [ ] **Step 4:** 在 Win11/RTX 2060、Win11/B580 及 CPU 先跑验收脚本，再补齐 Linux/NVIDIA/AMD/Arc、M 系列 Mac、Intel Mac CPU 的必需路径。用固定人物/音频比较当前 Python 效果；执行干净资源目录首启→下载→断网→一键训练→曲线→取消保存→重开续训→生成播放，另测损坏资源、OOM/驱动失败、中文路径和编码中断。生产 catalog 需要真实可访问地址、有效哈希和可分发来源；没有素材/设备/地址的项保持未通过，不把它们计作任务全部完成。
 - [ ] **Step 5:** `python tools/acceptance/check_reports.py --matrix resources/targets.json --reports .artifacts/reports --require-complete` 预期全部必需行 PASS；README 写清首启/离线/硬件与资源要求、基准和已验证范围。提交 `build: package and validate supported desktop hardware paths`；待验证的环境或发布依赖必须在交付记录保留为未完成。
+
+执行记录：Windows 10 x64 上用最终 Tauri overlay 构建新版 NSIS，并验证独立目录安装、空缓存首启、随包 CPU worker/probe 的复制及退出。CPU 和 RTX 2060 Vulkan 在 release worker 上从 step 1 续训到 step 2，导出 640×600、29 帧、25 FPS 的 H.264/AAC。完整发布门禁退出 1，确认的发布项仅为 Windows x64 构建；其余平台构建与完整发布验收见 [平台矩阵](../../validation/platform-matrix.md)。
+
+#### Task 18a: 可搬到 Win11 / Arc B580 的本地验收包
+
+目标是让另一台机器直接执行现有训练、续训和导出验收，无需安装 Rust、Node 或 Python。继续使用目标机显卡驱动和本地已校验资源；测试素材由运行人选择。安装验收和发布验收仍按 Task 18 记录。
+
+- [x] **打包契约：** `tools/acceptance/stage_smoke_kit.py --packages <dir> --runner <exe> --output <new-dir>` 复制并校验 Windows x64 CPU/Vulkan 默认资源、原 catalog、验收程序和 `run.ps1`。相对地址搬移、缺失组件和同大小内容损坏三项测试通过。
+- [x] **运行契约：** `run.ps1 -Runner <exe>` 直接运行 `hardware_acceptance`；省略时沿用 Cargo，测试兼容新相对地址和已有绝对地址。搬移后用无开发工具的 PATH 在 RTX 2060 复跑成功，记录位于 `.artifacts/task18/relocated kit/result/`。
+- [x] **交付：** 已保留 `.artifacts/task18/arc-b580-local-kit.zip`、SHA-256 和 [复跑命令](../../validation/release-checklist.md)。B580 验收仍待 Win11 实机执行。
 
 ## 外部依赖与执行边界
 

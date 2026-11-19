@@ -1,0 +1,49 @@
+name: Desktop checks
+
+on: [push, pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, ubuntu-24.04, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.21.0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev ffmpeg
+      - name: Install locked Rust toolchain
+        run: rustup toolchain install 1.100.0 --profile minimal --component rustfmt
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test --run
+      - run: pnpm test:contracts
+      - run: pnpm build
+      - run: cargo +1.100.0 fmt --all --check
+      - run: cargo +1.100.0 test --locked -p feathertalk-core
+      - run: cargo +1.100.0 test --locked -p feather-talk-gui --lib --test app_service --test resource_cache --test worker_host
+      - run: cargo +1.100.0 test --locked -p feathertalk-worker --no-default-features --features flex
+      - run: cargo +1.100.0 test --locked -p feathertalk-engine --no-default-features --features flex --test performance_policy --test training_checkpoint
+      # The full parity suite also needs tensors generated from the upstream project.
+      - run: cargo +1.100.0 test --locked -p feathertalk-engine --no-default-features --features flex --test render_parity source_picker_bounces_without_repeated_endpoints
+      - name: Verify video encoding on Linux
+        if: runner.os == 'Linux'
+        env:
+          FT_FFMPEG: /usr/bin/ffmpeg
+          FT_FFPROBE: /usr/bin/ffprobe
+        run: cargo +1.100.0 test --locked -p feathertalk-engine --no-default-features --features flex --test video_export
+      - run: python -m pip install pytest==8.4.2
+      - run: python -m pytest tools/acceptance -q

@@ -6,12 +6,7 @@ use feathertalk_engine::{
 };
 use std::{fs, path::PathBuf};
 fn tools() -> MediaTools {
-    let bin = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../.superpowers/toolchain/ffmpeg/ffmpeg-9.0.2-essentials_build/bin");
-    MediaTools {
-        ffmpeg: bin.join("ffmpeg.exe"),
-        ffprobe: bin.join("ffprobe.exe"),
-    }
+    MediaTools::from_env().expect("video export tests require FT_FFMPEG and FT_FFPROBE")
 }
 fn root() -> PathBuf {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

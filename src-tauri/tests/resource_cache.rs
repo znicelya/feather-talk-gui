@@ -4,13 +4,14 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     fs,
-    io::{Read, Write},
-    net::TcpListener,
+    io::{BufRead, BufReader, Write},
+    net::{TcpListener, TcpStream},
     path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
+    time::Duration,
 };
 fn hash(b: &[u8]) -> String {
     format!("{:x}", Sha256::digest(b))
@@ -86,6 +87,24 @@ fn manager(root: PathBuf, cs: Vec<Component>) -> ResourceManager {
     )
     .unwrap()
 }
+fn request_line(stream: &mut TcpStream) -> String {
+    // On Windows an accepted socket inherits the listener's nonblocking mode.
+    stream.set_nonblocking(false).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut request = String::new();
+    assert!(reader.read_line(&mut request).unwrap() > 0);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        assert!(reader.read_line(&mut line).unwrap() > 0);
+        if line == "\r\n" {
+            return request;
+        }
+    }
+}
 fn server(
     body: Vec<u8>,
     declared: usize,
@@ -100,7 +119,7 @@ fn server(
         while std::time::Instant::now() < end {
             if let Ok((mut s, _)) = l.accept() {
                 c.fetch_add(1, Ordering::SeqCst);
-                let _ = s.read(&mut [0; 4096]);
+                request_line(&mut s);
                 let _ = write!(
                     s,
                     "HTTP/1.1 200 OK\r\nContent-Length: {declared}\r\nConnection: close\r\n\r\n"
@@ -246,8 +265,7 @@ fn successful_download_retry_offline_and_cancel() {
         while !stopped.load(Ordering::SeqCst) {
             if let Ok((mut s, _)) = l.accept() {
                 let n = cnt.fetch_add(1, Ordering::SeqCst);
-                let mut request = [0; 4096];
-                let len = s.read(&mut request).unwrap();
+                let request = request_line(&mut s);
                 if n == 0 {
                     let _ = write!(
                         s,
@@ -255,7 +273,7 @@ fn successful_download_retry_offline_and_cancel() {
                     );
                     continue;
                 }
-                let body = if String::from_utf8_lossy(&request[..len]).contains("/manifest.json") {
+                let body = if request.starts_with("GET /manifest.json ") {
                     raw.as_slice()
                 } else {
                     b"complete"
@@ -566,7 +584,7 @@ fn cancellation_during_download_never_publishes() {
     );
     let h = std::thread::spawn(move || {
         let (mut s, _) = l.accept().unwrap();
-        let _ = s.read(&mut [0; 4096]);
+        request_line(&mut s);
         write!(
             s,
             "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
