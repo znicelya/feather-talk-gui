@@ -1,10 +1,12 @@
 //! Explicit resource preparation. Inventory and identity resolution never use HTTP.
 pub mod catalog;
 mod download;
+mod installed_worker;
 mod inventory;
 pub use catalog::*;
 use feathertalk_core::*;
 use fs2::FileExt;
+pub use installed_worker::InstalledWorker;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -139,6 +141,30 @@ impl ResourceManager {
         identity: &ModelIdentity,
         target: &TargetPlatform,
     ) -> Result<PathBuf> {
+        self.resolve_model_generation(target, |path, c| {
+            if &c.manifest.identity == identity {
+                return Ok(Some(path.to_path_buf()));
+            }
+            let files = c.files();
+            for p in &c.manifest.relative_files {
+                if p.file_name().is_some_and(|n| n == "manifest.json") {
+                    inventory::verify_file(path, p, &files[p])?;
+                    let nested: AssetManifest =
+                        serde_json::from_slice(&fs::read(path.join(p)).map_err(fail)?)
+                            .map_err(fail)?;
+                    if &nested.identity == identity {
+                        return Ok(Some(path.join(p).parent().unwrap().to_path_buf()));
+                    }
+                }
+            }
+            Ok(None)
+        })
+    }
+    fn resolve_model_generation<T>(
+        &self,
+        target: &TargetPlatform,
+        matches: impl Fn(&Path, &Component) -> Result<Option<T>>,
+    ) -> Result<T> {
         catalog::validate_target(target)?;
         let mut evidence = Vec::new();
         for id in fs::read_dir(&self.root).map_err(fail)? {
@@ -161,7 +187,7 @@ impl ResourceManager {
                     continue;
                 }
                 let path = version.path();
-                match self.identity_in_candidate(&path, identity, target) {
+                match self.model_candidate(&path, target, &matches) {
                     Ok(Some(found)) => return Ok(found),
                     Ok(None) => {}
                     Err(error) => {
@@ -181,18 +207,18 @@ impl ResourceManager {
         let mut error = AppError::new(
             ErrorCode::ResourceMissing,
             "resources",
-            "Pinned model identity has no fully verified installed generation",
+            "Pinned model dependencies have no fully verified installed generation",
         );
         error.evidence = evidence;
         Err(error)
     }
     /// Failure rejects this entire generation, never the remaining candidates.
-    fn identity_in_candidate(
+    fn model_candidate<T>(
         &self,
         path: &Path,
-        identity: &ModelIdentity,
         target: &TargetPlatform,
-    ) -> Result<Option<PathBuf>> {
+        matches: &impl Fn(&Path, &Component) -> Result<Option<T>>,
+    ) -> Result<Option<T>> {
         inventory::contained(&self.root, path)?;
         inventory::contained(&self.root, &path.join(".component.json"))?;
         let c: Component =
@@ -202,25 +228,14 @@ impl ResourceManager {
         if self.destination(&c) != path {
             return Err(fail("installed metadata does not match generation path"));
         }
-        if !compatible(&c, target) {
+        if !matches!(c.kind.as_str(), "model" | "model_bundle") || !compatible(&c, target) {
             return Ok(None);
         }
-        if &c.manifest.identity == identity {
+        let found = matches(path, &c)?;
+        if found.is_some() {
             self.verify_installed(path, &c)?;
-            return Ok(Some(path.to_path_buf()));
         }
-        for p in &c.manifest.relative_files {
-            if p.file_name().is_some_and(|n| n == "manifest.json") {
-                inventory::verify_file(path, p, &c.files()[p])?;
-                let nested: AssetManifest =
-                    serde_json::from_slice(&fs::read(path.join(p)).map_err(fail)?).map_err(fail)?;
-                if &nested.identity == identity {
-                    self.verify_installed(path, &c)?;
-                    return Ok(Some(path.join(p).parent().unwrap().to_path_buf()));
-                }
-            }
-        }
-        Ok(None)
+        Ok(found)
     }
     pub fn prepare(
         &self,

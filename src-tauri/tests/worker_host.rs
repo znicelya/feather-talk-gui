@@ -12,10 +12,7 @@ use feathertalk_core::*;
 #[test]
 #[ignore = "requires explicitly installed local context"]
 fn hello_and_crash_preserves_gui_error_context() {
-    let Some(context) = std::env::var_os("FT_WORKER_CONTEXT") else {
-        eprintln!("SKIP: explicit local resource context not supplied");
-        return;
-    };
+    let context = std::env::var_os("FT_WORKER_CONTEXT").expect("explicit installed context");
     let context: WorkerContext = serde_json::from_slice(&std::fs::read(context).unwrap()).unwrap();
     let binary =
         std::path::PathBuf::from(std::env::var_os("FT_WORKER_BINARY").expect("worker binary"));

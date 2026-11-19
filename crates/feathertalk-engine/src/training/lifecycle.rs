@@ -8,7 +8,7 @@ use super::{
 use crate::{ExecutionDevice, data::prepared::PreparedProject, models::vgg::VggFeatures};
 use feathertalk_core::*;
 use serde::{Deserialize, Serialize};
-use std::{path::Path, time::Instant};
+use std::{fs, io::ErrorKind, path::Path, time::Instant};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StoppingReason {
@@ -25,12 +25,20 @@ pub struct TrainingResult {
     pub stopping_reason: StoppingReason,
 }
 fn publish(state: &TrainingState, observer: &dyn TaskObserver) -> Result<ModelRef> {
+    let root = state.project_directory();
+    let checkpoints = root.join("checkpoints");
+    match fs::create_dir(&checkpoints) {
+        Ok(()) => {}
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(invalid(e)),
+    }
+    let checkpoints = checkpoints.canonicalize().map_err(invalid)?;
+    if !checkpoints.starts_with(root) || !checkpoints.is_dir() {
+        return Err(invalid("Checkpoint directory must be inside the project"));
+    }
     let reference = save_checkpoint(
         state,
-        &state
-            .project_directory()
-            .join("checkpoints")
-            .join(format!("generation-{}", TrainingRunId::new())),
+        &checkpoints.join(format!("generation-{}", TrainingRunId::new())),
     )?;
     observer
         .emit(EventPayload::CheckpointCommitted {

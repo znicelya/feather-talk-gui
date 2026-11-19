@@ -640,6 +640,24 @@ fn assert_nested_lookup_skips_damage(damage: &str) {
 fn nested_lookup_skips_invalid_metadata() {
     assert_nested_lookup_skips_damage("metadata");
 }
+
+#[test]
+fn runtime_identity_is_not_a_model_dependency() {
+    let (source, mut runtime) = fixture("runtime", b"runtime bytes");
+    runtime.kind = "media".into();
+    runtime.target = Some(target());
+    let identity = runtime.manifest.identity.clone();
+    let root = tempfile::tempdir().unwrap();
+    let m = manager(root.path().into(), vec![runtime]);
+    m.import_local(&source.path().join("manifest.json"))
+        .unwrap();
+    assert!(m.inventory(&target()).unwrap().ready);
+    assert_eq!(
+        m.resolve_identity(&identity, &target()).unwrap_err().code,
+        ErrorCode::ResourceMissing
+    );
+}
+
 #[test]
 fn nested_lookup_skips_unrelated_manifest_corruption() {
     assert_nested_lookup_skips_damage("nested");
