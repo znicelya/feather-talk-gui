@@ -1,5 +1,46 @@
 use feathertalk_engine::training::state::SeedPolicy;
 
+#[allow(dead_code)]
+mod training_fixture;
+
+#[cfg(feature = "flex")]
+#[test]
+fn committed_metadata_lookup_skips_device_restore_but_full_load_checks_weights() {
+    use feathertalk_core::*;
+    use feathertalk_engine::training::{
+        checkpoint::{load_checkpoint, read_committed_metadata, save_checkpoint},
+        state::TrainingState,
+    };
+    let (root, prepared) = training_fixture::fixture();
+    let device = training_fixture::device();
+    let state = TrainingState::fresh(
+        &TrainRequest {
+            project_id: prepared.project_id,
+            batch_mode: BatchMode::Fixed,
+            config: TrainConfig::default(),
+            device: DevicePolicy::Auto,
+            resume: None,
+        },
+        &prepared,
+        &device,
+    )
+    .unwrap();
+    let directory = root.join("checkpoints/metadata-fixture");
+    let reference = save_checkpoint(&state, &directory).unwrap();
+    assert_eq!(
+        read_committed_metadata(&root, &reference).unwrap(),
+        state.metadata
+    );
+    std::fs::write(directory.join("model.bpk"), b"damaged checkpoint weights").unwrap();
+    assert_eq!(
+        read_committed_metadata(&root, &reference).unwrap(),
+        state.metadata
+    );
+    assert!(load_checkpoint(&root, &reference, &device).is_err());
+    std::fs::write(directory.join("manifest.json"), b"damaged manifest").unwrap();
+    assert!(read_committed_metadata(&root, &reference).is_err());
+}
+
 #[test]
 fn seed_policy_is_versioned_and_domain_separated() {
     let policy = SeedPolicy::new(42);

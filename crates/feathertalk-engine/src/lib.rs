@@ -1,3 +1,4 @@
+pub mod benchmark;
 pub mod data;
 pub mod device;
 pub mod inference;

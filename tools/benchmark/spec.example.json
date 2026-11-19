@@ -1,0 +1,17 @@
+{
+  "project": ".artifacts/example-project",
+  "checkpoint": "replace-with-a-committed-checkpoint-id",
+  "assets": ".artifacts/assets",
+  "audio": ".artifacts/driving.wav",
+  "ffmpeg": "/absolute/path/to/ffmpeg",
+  "ffprobe": "/absolute/path/to/ffprobe",
+  "reference": ".artifacts/reference",
+  "scratch": ".artifacts",
+  "device": { "backend": "vulkan", "device_id": "vulkan:0" },
+  "precision": "f32",
+  "batch_size": 1,
+  "prefetch_capacity": 2,
+  "sample_loss": true,
+  "warmup": 1,
+  "repetitions": 3
+}

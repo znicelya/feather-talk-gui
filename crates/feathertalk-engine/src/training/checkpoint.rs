@@ -190,8 +190,11 @@ impl MaterializedSnapshot {
     }
     fn read_manifest(root: &Path, bytes: &[u8]) -> Result<Self> {
         let m: DiskManifest = serde_json::from_slice(bytes).map_err(invalid)?;
-        let model = fs::read(contained(&root, Path::new("model.bpk"))?).map_err(invalid)?;
-        let optimizer = fs::read(contained(&root, Path::new("adam.bpk"))?).map_err(invalid)?;
+        Self::read_payload(root, m)
+    }
+    fn read_payload(root: &Path, m: DiskManifest) -> Result<Self> {
+        let model = fs::read(contained(root, Path::new("model.bpk"))?).map_err(invalid)?;
+        let optimizer = fs::read(contained(root, Path::new("adam.bpk"))?).map_err(invalid)?;
         if model.len() as u64 != m.model_size
             || digest(&model) != m.model_sha256
             || optimizer.len() as u64 != m.optimizer_size
@@ -321,13 +324,8 @@ pub(super) fn save_with_hook(
     fs::rename(pending, root.join("project.json")).map_err(invalid)?;
     Ok(model_ref)
 }
-pub fn load_checkpoint(
-    project_directory: &Path,
-    model_ref: &ModelRef,
-    device: &ExecutionDevice,
-) -> Result<TrainingState> {
-    let root = fs::canonicalize(project_directory).map_err(invalid)?;
-    let project = read_project(&root)?;
+fn committed_manifest(root: &Path, model_ref: &ModelRef) -> Result<(PathBuf, DiskManifest)> {
+    let project = read_project(root)?;
     let entries: Vec<_> = project
         .checkpoints
         .iter()
@@ -337,7 +335,7 @@ pub fn load_checkpoint(
         return Err(invalid("ModelRef is not uniquely committed in project"));
     }
     let entry = entries[0];
-    let path = contained(&root, &entry.relative_path)?;
+    let path = contained(root, &entry.relative_path)?;
     let bytes = fs::read(&path).map_err(invalid)?;
     if bytes.len() as u64 != entry.size_bytes
         || digest(&bytes) != entry.sha256
@@ -345,21 +343,43 @@ pub fn load_checkpoint(
     {
         return Err(invalid("Committed checkpoint integrity mismatch"));
     }
-    let snapshot = MaterializedSnapshot::read_manifest(path.parent().unwrap(), &bytes)?;
-    let m = snapshot.metadata();
+    let manifest: DiskManifest = serde_json::from_slice(&bytes).map_err(invalid)?;
+    let m = &manifest.metadata;
     if m.project_id != model_ref.project_id
         || m.run_id != model_ref.run_id
         || m.epoch != entry.epoch
         || m.global_step != entry.step
         || m.config != entry.config
-        || entry.identity.weights_sha256 != digest(&snapshot.model)
+        || entry.identity.weights_sha256 != manifest.model_sha256
         || entry.identity.architecture_version != m.architecture
         || entry.identity.source_sha256 != m.source.sha256
         || entry.identity.kind != "feathertalk"
     {
         return Err(invalid("Committed checkpoint metadata mismatch"));
     }
-    snapshot.restore(&root, device)
+    Ok((path.parent().unwrap().into(), manifest))
+}
+
+/// Resolve the dependencies of a committed checkpoint without reading or
+/// transferring its tensor payload. The consumer must still load and validate
+/// the full checkpoint before training or rendering.
+pub fn read_committed_metadata(
+    project_directory: &Path,
+    model_ref: &ModelRef,
+) -> Result<TrainingMetadata> {
+    let root = fs::canonicalize(project_directory).map_err(invalid)?;
+    let (_, manifest) = committed_manifest(&root, model_ref)?;
+    Ok(manifest.metadata)
+}
+
+pub fn load_checkpoint(
+    project_directory: &Path,
+    model_ref: &ModelRef,
+    device: &ExecutionDevice,
+) -> Result<TrainingState> {
+    let root = fs::canonicalize(project_directory).map_err(invalid)?;
+    let (directory, manifest) = committed_manifest(&root, model_ref)?;
+    MaterializedSnapshot::read_payload(&directory, manifest)?.restore(&root, device)
 }
 
 use burn::module::Module;

@@ -249,14 +249,13 @@ fn execute(
         JobSpec::Generate(r) => Some(&r.model_ref),
     };
     let prepared = if let Some(reference) = reference {
-        let state =
-            engine::training::checkpoint::load_checkpoint(&binding.directory, reference, &device)?;
-        for identity in state
-            .metadata
+        let metadata =
+            engine::training::checkpoint::read_committed_metadata(&binding.directory, reference)?;
+        for identity in metadata
             .preprocessing
             .component_identities
             .iter()
-            .chain(state.metadata.vgg_identity.iter())
+            .chain(metadata.vgg_identity.iter())
         {
             let manifest: AssetManifest = serde_json::from_slice(
                 &fs::read(c.assets.join(&identity.kind).join("manifest.json"))
@@ -274,8 +273,8 @@ fn execute(
         engine::data::prepared::reopen_generation(
             &binding.directory,
             &project,
-            &state.metadata.preprocessing.cache_directory,
-            &state.metadata.prepared_manifest_sha256,
+            &metadata.preprocessing.cache_directory,
+            &metadata.prepared_manifest_sha256,
         )?
     } else {
         engine::data::prepare_project(
