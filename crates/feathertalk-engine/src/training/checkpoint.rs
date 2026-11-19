@@ -5,7 +5,7 @@ use super::{
 };
 use crate::{
     ExecutionDevice,
-    data::prepared::{file_hash, reopen_generation},
+    data::prepared::{PreparedProject, file_hash, reopen_generation},
     models::feathertalk::FeatherTalk,
 };
 use burn_store::{BurnpackStore, ModuleSnapshot};
@@ -44,7 +44,7 @@ fn contained(root: &Path, relative: &Path) -> Result<PathBuf> {
     }
     Ok(path)
 }
-pub(super) fn validate_metadata(root: &Path, m: &TrainingMetadata) -> Result<()> {
+pub(super) fn validate_metadata_values(m: &TrainingMetadata) -> Result<()> {
     super::state::validate_adam_config(&m.config)?;
     match &m.vgg_identity {
         Some(id) => crate::models::vgg::validate_identity(id)?,
@@ -69,6 +69,10 @@ pub(super) fn validate_metadata(root: &Path, m: &TrainingMetadata) -> Result<()>
     {
         return Err(invalid("Invalid training metadata/counters/batch policy"));
     }
+    Ok(())
+}
+pub(super) fn validate_metadata(root: &Path, m: &TrainingMetadata) -> Result<PreparedProject> {
+    validate_metadata_values(m)?;
     let project = read_project(root)?;
     if project.id != m.project_id
         || project.source_video != m.source
@@ -98,7 +102,7 @@ pub(super) fn validate_metadata(root: &Path, m: &TrainingMetadata) -> Result<()>
         return Err(invalid("Checkpoint data identity differs"));
     }
     crate::data::sampler::PairSampler::restore(&prepared, m.sampler.clone())?;
-    Ok(())
+    Ok(prepared)
 }
 pub(crate) fn model_bytes(model: &FeatherTalk) -> Result<Vec<u8>> {
     let mut store = BurnpackStore::from_bytes(None);
@@ -118,6 +122,11 @@ impl MaterializedSnapshot {
     }
     pub fn capture(state: &TrainingState) -> Result<Self> {
         validate_metadata(&state.project_directory, &state.metadata)?;
+        Self::capture_tensors(state)
+    }
+    // The trainer uses this only with a verified data binding for the active run.
+    pub(super) fn capture_tensors(state: &TrainingState) -> Result<Self> {
+        validate_metadata_values(&state.metadata)?;
         let model = model_bytes(&state.model)?;
         let optimizer = state.optimizer_bytes()?;
         let template = super::state::with_seed(
@@ -140,6 +149,14 @@ impl MaterializedSnapshot {
     ) -> Result<TrainingState> {
         let root = fs::canonicalize(project_directory).map_err(invalid)?;
         validate_metadata(&root, &self.metadata)?;
+        self.restore_tensors(root, device)
+    }
+    // Restore either a checked checkpoint or an in-process snapshot from the same step.
+    pub(super) fn restore_tensors(
+        &self,
+        root: PathBuf,
+        device: &ExecutionDevice,
+    ) -> Result<TrainingState> {
         super::state::with_seed(
             &device.device,
             self.metadata.seed_policy.initialization_seed(),
@@ -377,9 +394,20 @@ pub fn load_checkpoint(
     model_ref: &ModelRef,
     device: &ExecutionDevice,
 ) -> Result<TrainingState> {
+    load_checkpoint_with_data(project_directory, model_ref, device).map(|(state, _)| state)
+}
+
+pub(super) fn load_checkpoint_with_data(
+    project_directory: &Path,
+    model_ref: &ModelRef,
+    device: &ExecutionDevice,
+) -> Result<(TrainingState, PreparedProject)> {
     let root = fs::canonicalize(project_directory).map_err(invalid)?;
     let (directory, manifest) = committed_manifest(&root, model_ref)?;
-    MaterializedSnapshot::read_payload(&directory, manifest)?.restore(&root, device)
+    let snapshot = MaterializedSnapshot::read_payload(&directory, manifest)?;
+    let pinned = validate_metadata(&root, snapshot.metadata())?;
+    let state = snapshot.restore_tensors(root, device)?;
+    Ok((state, pinned))
 }
 
 use burn::module::Module;

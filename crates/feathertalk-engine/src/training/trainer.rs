@@ -2,7 +2,7 @@
 use super::{
     checkpoint::MaterializedSnapshot,
     losses::{LossParts, compute_loss},
-    state::{TrainingState, invalid, with_seed},
+    state::{TrainingData, TrainingState, invalid, with_seed},
 };
 use crate::{
     ExecutionDevice,
@@ -40,7 +40,19 @@ pub fn complete_step(
     cancel: &Cancellation,
 ) -> Result<StepOutcome> {
     crate::media::ffmpeg::check(cancel)?;
-    state.validate_prepared(prepared)?;
+    let data = TrainingData::verify(state, prepared)?;
+    complete_step_validated(state, &data, vgg, device, cancel)
+}
+
+pub(super) fn complete_step_validated(
+    state: &mut TrainingState,
+    data: &TrainingData<'_>,
+    vgg: &VggFeatures,
+    device: &ExecutionDevice,
+    cancel: &Cancellation,
+) -> Result<StepOutcome> {
+    crate::media::ffmpeg::check(cancel)?;
+    let prepared = data.for_state(state)?;
     match &state.metadata.vgg_identity {
         Some(id) if id != vgg.identity() => {
             return Err(invalid(
@@ -70,10 +82,6 @@ pub fn complete_step(
     }
     // An independent candidate owns BN, parameters and Adam. Errors never expose
     // partial mutations in the caller's still-committed state. No nested RNG lock.
-    let backup = MaterializedSnapshot::capture(state)?;
-    let mut candidate = backup.restore(state.project_directory(), device)?;
-    drop(backup);
-    candidate.metadata.vgg_identity = Some(vgg.identity().clone());
     let mut sampler = PairSampler::restore(prepared, state.metadata.sampler.clone())?;
     if sampler.snapshot().cursor == sampler.snapshot().permutation.len() {
         sampler.advance_epoch()?;
@@ -97,6 +105,11 @@ pub fn complete_step(
     }
     let staged = sampler.snapshot();
     let epoch = u32::try_from(staged.epoch).map_err(invalid)?;
+    crate::media::ffmpeg::check(cancel)?;
+    let backup = MaterializedSnapshot::capture_tensors(state)?;
+    let mut candidate = backup.restore_tensors(state.project_directory().to_path_buf(), device)?;
+    drop(backup);
+    candidate.metadata.vgg_identity = Some(vgg.identity().clone());
     crate::media::ffmpeg::check(cancel)?;
     let seed = state
         .metadata
@@ -181,7 +194,7 @@ pub fn complete_step(
     candidate.metadata.sampler = staged;
     // Validate finite updated model and the complete 504-moment/time inventory
     // before publication; this is deliberately correctness-first host overhead.
-    MaterializedSnapshot::capture(&candidate)?;
+    MaterializedSnapshot::capture_tensors(&candidate)?;
     *state = candidate;
     Ok(StepOutcome {
         losses,

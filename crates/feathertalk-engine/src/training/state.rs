@@ -13,7 +13,10 @@ use burn::{
 };
 use feathertalk_core::*;
 use serde::{Deserialize, Serialize};
-use std::{path::PathBuf, sync::Mutex};
+use std::{
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
 
 pub(crate) fn invalid(e: impl std::fmt::Display) -> AppError {
     AppError::new(
@@ -90,6 +93,72 @@ pub struct TrainingState {
     optimizer_config: [f64; 5],
     pub metadata: TrainingMetadata,
     pub(crate) project_directory: PathBuf,
+}
+
+/// A validated binding for one training session. The borrowed feature data and
+/// frame index cannot change during the session; sampled frame bytes are checked
+/// on every read. External checkpoint boundaries still verify the entire cache.
+pub(super) struct TrainingData<'a> {
+    prepared: &'a PreparedProject,
+    source: SourceVideo,
+    model: Option<ModelIdentity>,
+    manifest_sha256: String,
+}
+impl<'a> TrainingData<'a> {
+    pub(super) fn verify(state: &TrainingState, prepared: &'a PreparedProject) -> Result<Self> {
+        let pinned =
+            super::checkpoint::validate_metadata(state.project_directory(), &state.metadata)?;
+        Self::bind(state, prepared, &pinned)
+    }
+
+    pub(super) fn bind(
+        state: &TrainingState,
+        prepared: &'a PreparedProject,
+        pinned: &PreparedProject,
+    ) -> Result<Self> {
+        let data = Self {
+            prepared,
+            source: state.metadata.source.clone(),
+            model: state.metadata.project_model_identity.clone(),
+            manifest_sha256: state.metadata.prepared_manifest_sha256.clone(),
+        };
+        data.for_state(state)?;
+        if prepared.features != pinned.features
+            || prepared.canonical_frame_count != pinned.canonical_frame_count
+            || prepared.feature_frame_count != pinned.feature_frame_count
+            || prepared.usable_frames != pinned.usable_frames
+            || prepared.frames.len() != pinned.frames.len()
+            || prepared.frames.iter().zip(&pinned.frames).any(|(a, b)| {
+                a.file != b.file || a.sha256 != b.sha256 || a.landmarks != b.landmarks
+            })
+            || prepared.generation != pinned.generation
+            || prepared.canonical_video != pinned.canonical_video
+            || prepared.canonical_audio != pinned.canonical_audio
+        {
+            return Err(invalid(
+                "Prepared in-memory data differs from pinned generation",
+            ));
+        }
+        Ok(data)
+    }
+
+    pub(super) fn for_state(&self, state: &TrainingState) -> Result<&'a PreparedProject> {
+        let m = &state.metadata;
+        let prepared = self.prepared;
+        if m.project_id != prepared.project_id
+            || m.prepared_identity != prepared.identity
+            || m.preprocessing != prepared.preprocessing
+            || state.project_directory != prepared.project_directory
+            || m.source != self.source
+            || m.project_model_identity != self.model
+            || m.prepared_manifest_sha256 != self.manifest_sha256
+        {
+            return Err(invalid(
+                "Training state and verified prepared project differ",
+            ));
+        }
+        Ok(prepared)
+    }
 }
 /// Shared persistence/execution domain: lr and epsilon must remain positive in
 /// F32 (representable subnormals are allowed). Beta/decay may round to zero.
@@ -172,6 +241,14 @@ impl TrainingState {
         prepared: &PreparedProject,
         device: &ExecutionDevice,
     ) -> Result<Self> {
+        Self::fresh_with_data(request, prepared, device).map(|(state, _)| state)
+    }
+
+    pub(super) fn fresh_with_data<'a>(
+        request: &TrainRequest,
+        prepared: &'a PreparedProject,
+        device: &ExecutionDevice,
+    ) -> Result<(Self, TrainingData<'a>)> {
         validate_adam_config(&request.config)?;
         if request.resume.is_some()
             || request.project_id != prepared.project_id
@@ -188,15 +265,6 @@ impl TrainingState {
                 .join(&prepared.preprocessing.cache_directory)
                 .join("manifest.json"),
         )?;
-        let pinned = crate::data::prepared::reopen_generation(
-            &root,
-            &project,
-            &prepared.preprocessing.cache_directory,
-            &manifest_hash,
-        )?;
-        if pinned.identity != prepared.identity {
-            return Err(invalid("Prepared generation mismatch"));
-        }
         let policy = SeedPolicy::new(request.config.seed);
         let model = with_seed(&device.device, policy.initialization_seed(), || {
             Ok(FeatherTalk::new(&device.device.clone().autodiff()))
@@ -207,8 +275,8 @@ impl TrainingState {
             run_id: TrainingRunId::new(),
             source: project.source_video,
             project_model_identity: project.model_identity,
-            preprocessing: pinned.preprocessing.clone(),
-            prepared_identity: pinned.identity.clone(),
+            preprocessing: prepared.preprocessing.clone(),
+            prepared_identity: prepared.identity.clone(),
             prepared_manifest_sha256: manifest_hash,
             architecture: "feathertalk-default-v1-447".into(),
             vgg_identity: None,
@@ -218,48 +286,17 @@ impl TrainingState {
             actual_batch: request.config.batch_size,
             epoch: 0,
             global_step: 0,
-            sampler: PairSampler::new(&pinned, request.config.seed)?.snapshot(),
+            sampler: PairSampler::new(prepared, request.config.seed)?.snapshot(),
             seed_policy: policy,
         };
         let state = Self::from_parts(model, adam(&request.config)?, metadata, root);
-        super::checkpoint::validate_metadata(&state.project_directory, &state.metadata)?;
-        state.validate_prepared(prepared)?;
-        Ok(state)
+        let data = TrainingData::verify(&state, prepared)?;
+        Ok((state, data))
     }
-    pub fn project_directory(&self) -> &std::path::Path {
+    pub fn project_directory(&self) -> &Path {
         &self.project_directory
     }
     pub fn validate_prepared(&self, prepared: &PreparedProject) -> Result<()> {
-        if self.metadata.project_id != prepared.project_id
-            || self.metadata.prepared_identity != prepared.identity
-            || self.metadata.preprocessing != prepared.preprocessing
-            || self.project_directory != prepared.project_directory
-        {
-            return Err(invalid(
-                "Training state and requested prepared project differ",
-            ));
-        }
-        PairSampler::restore(prepared, self.metadata.sampler.clone())?;
-        let project = super::checkpoint::read_project(&self.project_directory)?;
-        let pinned = crate::data::prepared::reopen_generation(
-            &self.project_directory,
-            &project,
-            &self.metadata.preprocessing.cache_directory,
-            &self.metadata.prepared_manifest_sha256,
-        )?;
-        if prepared.features != pinned.features
-            || prepared.frames.len() != pinned.frames.len()
-            || prepared.frames.iter().zip(&pinned.frames).any(|(a, b)| {
-                a.file != b.file || a.sha256 != b.sha256 || a.landmarks != b.landmarks
-            })
-            || prepared.generation != pinned.generation
-            || prepared.canonical_video != pinned.canonical_video
-            || prepared.canonical_audio != pinned.canonical_audio
-        {
-            return Err(invalid(
-                "Prepared in-memory data differs from pinned generation",
-            ));
-        }
-        Ok(())
+        TrainingData::verify(self, prepared).map(|_| ())
     }
 }

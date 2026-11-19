@@ -1,5 +1,8 @@
 //! Disposable full-objective candidates. No checkpoint or history publication.
-use super::{checkpoint::MaterializedSnapshot, state::TrainingState};
+use super::{
+    checkpoint::MaterializedSnapshot,
+    state::{TrainingData, TrainingState},
+};
 use crate::{ExecutionDevice, data::prepared::PreparedProject};
 use feathertalk_core::*;
 use serde::{Deserialize, Serialize};
@@ -29,7 +32,17 @@ pub fn probe_batch_size(
     device: &ExecutionDevice,
     context: &ProbeContext<'_>,
 ) -> Result<ProbeSelection> {
-    state.validate_prepared(prepared)?;
+    let data = TrainingData::verify(state, prepared)?;
+    probe_batch_size_validated(state, &data, device, context)
+}
+
+pub(super) fn probe_batch_size_validated(
+    state: &TrainingState,
+    data: &TrainingData<'_>,
+    device: &ExecutionDevice,
+    context: &ProbeContext<'_>,
+) -> Result<ProbeSelection> {
+    let prepared = data.for_state(state)?;
     let target = state.metadata.requested_batch;
     if state.metadata.batch_mode == BatchMode::Fixed {
         return Ok(ProbeSelection {
@@ -43,7 +56,7 @@ pub fn probe_batch_size(
             "Cannot probe an already completed run",
         ));
     }
-    let snapshot = MaterializedSnapshot::capture(state)?;
+    let snapshot = MaterializedSnapshot::capture_tensors(state)?;
     let mut candidate = target;
     let mut attempts = vec![];
     loop {

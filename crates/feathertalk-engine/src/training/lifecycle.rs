@@ -1,9 +1,9 @@
 //! Public run orchestration. Worker owns terminal events.
 use super::{
-    batch_probe::{ProbeContext, TrainingRuntime, probe_batch_size},
-    checkpoint::{load_checkpoint, save_checkpoint},
+    batch_probe::{ProbeContext, TrainingRuntime, probe_batch_size_validated},
+    checkpoint::{load_checkpoint_with_data, save_checkpoint},
     metrics::SampledMetrics,
-    state::{TrainingState, invalid},
+    state::{TrainingData, TrainingState, invalid},
 };
 use crate::{ExecutionDevice, data::prepared::PreparedProject, models::vgg::VggFeatures};
 use feathertalk_core::*;
@@ -57,6 +57,7 @@ fn publish(state: &TrainingState, observer: &dyn TaskObserver) -> Result<ModelRe
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::training::checkpoint::load_checkpoint;
     use crate::training::checkpoint_tests::{device, fixture};
     struct Observe;
     impl TaskObserver for Observe {
@@ -251,11 +252,15 @@ pub fn train(
             ));
         }
     }
-    let mut state = match &request.resume {
-        Some(reference) => load_checkpoint(&prepared.project_directory, reference, device)?,
-        None => TrainingState::fresh(request, prepared, device)?,
+    let (mut state, data) = match &request.resume {
+        Some(reference) => {
+            let (state, pinned) =
+                load_checkpoint_with_data(&prepared.project_directory, reference, device)?;
+            let data = TrainingData::bind(&state, prepared, &pinned)?;
+            (state, data)
+        }
+        None => TrainingState::fresh_with_data(request, prepared, device)?,
     };
-    state.validate_prepared(prepared)?;
     let vgg = VggFeatures::load(vgg_assets, &device.device.clone().autodiff())?;
     if state
         .metadata
@@ -299,9 +304,9 @@ pub fn train(
         return Ok(result(&state, reference, StoppingReason::Cancelled));
     }
     if !cancel.is_cancelled() {
-        match probe_batch_size(
+        match probe_batch_size_validated(
             &state,
-            prepared,
+            &data,
             device,
             &ProbeContext {
                 runtime,
@@ -338,7 +343,9 @@ pub fn train(
     let mut last_saved = None;
     while state.metadata.epoch < request.config.epochs && !cancel.is_cancelled() {
         let before_epoch = state.metadata.epoch;
-        let step = match super::trainer::complete_step(&mut state, prepared, &vgg, device, cancel) {
+        let step = match super::trainer::complete_step_validated(
+            &mut state, &data, &vgg, device, cancel,
+        ) {
             Ok(step) => step,
             Err(mut e) => {
                 if e.code == ErrorCode::Cancelled {

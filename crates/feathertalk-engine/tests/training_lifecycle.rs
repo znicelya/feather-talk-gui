@@ -3,7 +3,12 @@ use feathertalk_core::*;
 use feathertalk_engine::training::{
     batch_probe::TrainingRuntime, checkpoint::load_checkpoint, metrics::metrics_page, *,
 };
-use std::{path::Path, sync::Mutex};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::Mutex,
+    time::Duration,
+};
 struct Observe {
     events: Mutex<Vec<EventPayload>>,
     cancel: Cancellation,
@@ -127,4 +132,77 @@ fn actual_cancel_save_resume_total_epochs_history() {
         e,
         EventPayload::Completed { .. } | EventPayload::Cancelled { .. }
     )));
+}
+
+fn corrupt_cache_between_steps(relative: &str) -> (AppError, Vec<u64>) {
+    struct Corrupt {
+        file: PathBuf,
+        steps: Mutex<Vec<u64>>,
+    }
+    impl TaskObserver for Corrupt {
+        fn emit(&self, event: EventPayload) -> Result<()> {
+            if let EventPayload::Metrics(metric) = event {
+                self.steps.lock().unwrap().push(metric.step);
+                if metric.step == 1 {
+                    let mut bytes = fs::read(&self.file).unwrap();
+                    bytes[0] ^= 0xff;
+                    fs::write(&self.file, bytes).unwrap();
+                    // Guarantee that even on a faster device the next step is sampled.
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+            }
+            Ok(())
+        }
+    }
+    let (root, prepared) = training_fixture::fixture();
+    let device = training_fixture::device();
+    let observer = Corrupt {
+        file: root
+            .join(&prepared.preprocessing.cache_directory)
+            .join(relative),
+        steps: Mutex::default(),
+    };
+    let request = TrainRequest {
+        project_id: prepared.project_id,
+        batch_mode: BatchMode::Fixed,
+        config: TrainConfig {
+            epochs: 2,
+            batch_size: 1,
+            save_every: 2,
+            prefetch_capacity: 0,
+            ..Default::default()
+        },
+        device: DevicePolicy::Auto,
+        resume: None,
+    };
+    let error = train(
+        &request,
+        &prepared,
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.artifacts/assets/vgg19"),
+        &device,
+        &TrainingRuntime {
+            probe_runner: root.join("must-never-run.exe"),
+        },
+        &observer,
+        &Cancellation::new(),
+    )
+    .unwrap_err();
+    let project: ProjectManifest =
+        serde_json::from_slice(&fs::read(root.join("project.json")).unwrap()).unwrap();
+    assert!(project.checkpoints.is_empty());
+    (error, observer.steps.into_inner().unwrap())
+}
+
+#[test]
+fn unused_cache_artifact_is_rechecked_at_checkpoint_publication() {
+    let (error, steps) = corrupt_cache_between_steps("video.mkv");
+    assert_eq!(steps, [1, 2], "{error}");
+    assert!(error.message.contains("Cache artifact corrupted"));
+}
+
+#[test]
+fn corrupted_sampled_frame_rejects_the_update() {
+    let (error, steps) = corrupt_cache_between_steps("frames/0.f32");
+    assert_eq!(steps, [1]);
+    assert_eq!(error.stage, "prepared-frame");
 }

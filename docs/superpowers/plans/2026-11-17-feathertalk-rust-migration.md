@@ -272,7 +272,9 @@ Rust 中标注为 `Result<T>` 的自有接口均使用 core 的 `type Result<T> 
 - [ ] **Step 4:** 重跑策略测试；运行 `cargo run --release -p feathertalk-engine --features vulkan --bin benchmark -- --spec .artifacts/benchmark-spec.json --output .artifacts/reports/benchmark-vulkan.json`，CUDA/CPU 对应替换 feature/spec。预期报告写实测设备与数据，不把缺失硬件标为支持已验证；优化开启/关闭均能正常训练、续训和生成。
 - [ ] **Step 5:** 提交 `perf: select validated backends and optimize measured workloads`，附可重放基准说明与小型结果摘要，不提交私人人物素材。
 
-执行记录：同一 release 程序在 Windows 10 的 RTX 2060（560.94）与 i5-10400 上各跑了 1 次冷测、1 次热身、3 次热测。CUDA 热训练步更快，Vulkan 在 29 帧短导出中更快。去掉了 worker 续训和生成的重复 Burn 恢复，已在 CPU/Vulkan release 验证。Vulkan 预取对照做了四轮独立进程测量，采样 loss 相同，记录进程工作集并保留原默认值。完整样本和测量边界见 [性能记录](../../validation/performance.md)。生产自动选择暂未接入报告缓存，其他设备、较长素材和其余优化仍待验证。
+执行记录：同一 release 程序在 Windows 10 的 RTX 2060（560.94）与 i5-10400 上各跑了 1 次冷测、1 次热身、3 次热测。CUDA 热训练步更快，Vulkan 在 29 帧短导出中更快。去掉了 worker 续训和生成的重复 Burn 恢复，已在 CPU/Vulkan release 验证。Vulkan 预取对照做了四轮独立进程测量，采样 loss 相同，记录进程工作集并保留原默认值。完整样本和测量边界见 [性能记录](../../validation/performance.md)。生产自动选择暂未接入报告缓存，其他设备和其余优化仍待验证。
+
+长素材跟进：[CUDA 训练提速](2026-11-19-cuda-training-speed.md) 在 60 秒、1,500 帧素材上定位到训练每步重复扫描整套预处理缓存。训练循环复用已验证的数据，每步继续检查抽样帧及 Burn 更新，检查点仍做全量校验。RTX 2060、固定 batch size 1 的热步中位数从 22.450 秒降到 1.513 秒；总 loss、训练结果与续训状态一致。见 [性能记录](../../validation/performance.md#60-秒素材上的-cuda-训练)。
 
 ## Task 18: 多平台组件打包、干净环境与完整验收
 
