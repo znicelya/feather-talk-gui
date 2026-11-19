@@ -274,6 +274,26 @@ fn published_protocol_examples_match_rust_contracts() {
         }
     }
 }
+
+#[test]
+fn desktop_fixture_matches_the_wire() {
+    use serde_json::{Value, from_value, to_value};
+    let fixture: Value =
+        serde_json::from_str(include_str!("../../../contracts/desktop-fixture.json")).unwrap();
+    let train: TrainRequest = from_value(fixture["train"].clone()).unwrap();
+    assert_eq!(train.batch_mode, BatchMode::Fixed);
+    assert_eq!(train.config, TrainConfig::default());
+    assert_eq!(to_value(train).unwrap(), fixture["train"]);
+    for expected in fixture["events"].as_array().unwrap() {
+        let event: WorkerEvent = from_value(expected.clone()).unwrap();
+        assert_eq!(to_value(event).unwrap(), *expected);
+    }
+    let snapshot: TaskSnapshot = from_value(fixture["resource_snapshot"].clone()).unwrap();
+    assert_eq!(snapshot.project_id, None);
+    assert_eq!(to_value(snapshot).unwrap(), fixture["resource_snapshot"]);
+    let metrics: MetricsPageRequest = from_value(fixture["metrics_request"].clone()).unwrap();
+    assert_eq!(to_value(metrics).unwrap(), fixture["metrics_request"]);
+}
 #[test]
 fn persistence_and_query_contracts_roundtrip() {
     let m = model();
@@ -335,13 +355,17 @@ fn persistence_and_query_contracts_roundtrip() {
     });
     roundtrip(&TaskSnapshot {
         task_id: TaskId::new(),
-        project_id: m.project_id,
+        project_id: Some(m.project_id),
         job: JobKind::Train,
+        run_id: Some(m.run_id),
         status: TaskStatus::Completed,
         last_seq: 10,
         latest_event: None,
         result: Some(ArtifactResult::Model(m.clone())),
         error: None,
+        progress: None,
+        metrics: None,
+        checkpoint: Some(m.clone()),
     });
     roundtrip(&MetricsPageRequest {
         project_id: m.project_id,

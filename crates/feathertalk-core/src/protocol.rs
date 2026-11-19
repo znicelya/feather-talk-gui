@@ -50,6 +50,7 @@ pub enum JobSpec {
 pub enum JobKind {
     Train,
     Generate,
+    PrepareResources,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -133,6 +134,7 @@ pub struct ExportResult {
 pub enum ArtifactResult {
     Model(ModelRef),
     Video(ExportResult),
+    Resources(ResourceInventory),
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -310,21 +312,38 @@ impl Cancellation {
 pub enum TaskStatus {
     Queued,
     Running,
+    Cancelling,
     Completed,
     Cancelled,
     Failed,
+}
+impl TaskStatus {
+    pub fn is_active(self) -> bool {
+        matches!(self, Self::Queued | Self::Running | Self::Cancelling)
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskProgress {
+    pub stage: String,
+    pub completed: u64,
+    pub total: Option<u64>,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskSnapshot {
     pub task_id: TaskId,
-    pub project_id: ProjectId,
+    pub project_id: Option<ProjectId>,
     pub job: JobKind,
+    pub run_id: Option<TrainingRunId>,
     pub status: TaskStatus,
     pub last_seq: u64,
     pub latest_event: Option<WorkerEvent>,
     pub result: Option<ArtifactResult>,
     pub error: Option<AppError>,
+    pub progress: Option<TaskProgress>,
+    pub metrics: Option<TrainingMetrics>,
+    pub checkpoint: Option<ModelRef>,
 }
 /// Offset into the durable metrics stream, not an epoch or training step.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

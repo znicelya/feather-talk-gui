@@ -21,6 +21,18 @@ pub struct ResourceManager {
     mutation: Mutex<()>,
 }
 impl ResourceManager {
+    pub fn local_selections(&self) -> Vec<ResourceSelection> {
+        let mut selections = self
+            .catalog
+            .defaults
+            .iter()
+            .filter(|entry| installed_worker::validate_host_target(&entry.target).is_ok())
+            .cloned()
+            .collect::<Vec<_>>();
+        // Follow the engine's CPU preference until comparable benchmarks are available.
+        selections.sort_by_key(|entry| entry.target.backend != "cpu");
+        selections
+    }
     pub fn new(root: PathBuf, catalog: Catalog) -> Result<Self> {
         catalog.validate()?;
         fs::create_dir_all(&root).map_err(fail)?;
@@ -295,6 +307,14 @@ impl ResourceManager {
     }
     /// Import only a manifest whose exact bytes and inventory already occur in the configured catalog.
     pub fn import_local(&self, manifest: &Path) -> Result<()> {
+        self.import_local_observed(manifest, &Silent, &Cancellation::new())
+    }
+    pub(crate) fn import_local_observed(
+        &self,
+        manifest: &Path,
+        observer: &dyn TaskObserver,
+        cancel: &Cancellation,
+    ) -> Result<()> {
         let _guard = self.mutation.lock().map_err(fail)?;
         let _cache_lock = self.cache_lock()?;
         let raw = fs::read(manifest).map_err(fail)?;
@@ -321,7 +341,7 @@ impl ResourceManager {
             Path::new("manifest.json"),
             &c.files()[Path::new("manifest.json")],
         )?;
-        self.install(c, Some(&source), &Silent, &Cancellation::new())
+        self.install(c, Some(&source), observer, cancel)
     }
     fn install(
         &self,

@@ -1,0 +1,73 @@
+{
+  "train": {
+    "batch_mode": "fixed",
+    "project_id": "b6ab9f87-f2f0-4b31-803e-90f0fad362cb",
+    "config": {
+      "seed": 42,
+      "prefetch_capacity": 2,
+      "epochs": 60,
+      "batch_size": 8,
+      "lr": 0.001,
+      "beta1": 0.9,
+      "beta2": 0.999,
+      "epsilon": 1e-8,
+      "weight_decay": 0.0,
+      "save_every": 5,
+      "loss": { "full": 1.0, "mouth": 4.0, "temporal": 0.5, "temporal_mouth": 4.0, "perceptual": 0.01, "mouth_gradient": 0.5, "temporal_kernel": 5, "temporal_stride": 1 }
+    },
+    "device": { "policy": "explicit", "request": { "backend": "flex", "device_id": "flex:0" } },
+    "resume": null
+  },
+  "events": [
+    {
+      "protocol_version": 1, "task_id": null, "seq": 1,
+      "payload": {
+        "type": "request_rejected", "request": "start", "requested_task_id": "a6ab9f87-f2f0-4b31-803e-90f0fad362cb",
+        "error": { "code": "busy", "stage": "task", "message": "Another task is active", "evidence": [], "actions": [], "log_path": null }
+      }
+    },
+    {
+      "protocol_version": 1, "task_id": "a6ab9f87-f2f0-4b31-803e-90f0fad362cb", "seq": 12,
+      "payload": {
+        "type": "metrics", "project_id": "b6ab9f87-f2f0-4b31-803e-90f0fad362cb", "run_id": "c6ab9f87-f2f0-4b31-803e-90f0fad362cb",
+        "step": 1, "epoch": 1, "elapsed_ms": 512, "lr": 0.001,
+        "losses": { "full": 1.0, "mouth": 2.0, "temporal": 0.0, "temporal_mouth": 0.0, "perceptual": 0.5, "mouth_gradient": 0.25, "total": 9.13 },
+        "device": { "id": "flex:0", "name": "Burn Flex", "vendor": null, "driver": null, "backend": "flex", "memory_bytes": null },
+        "precision": "f32", "batch_size": 8
+      }
+    },
+    {
+      "protocol_version": 1, "task_id": "a6ab9f87-f2f0-4b31-803e-90f0fad362cb", "seq": 13,
+      "payload": {
+        "type": "checkpoint_committed",
+        "model_ref": { "project_id": "b6ab9f87-f2f0-4b31-803e-90f0fad362cb", "run_id": "c6ab9f87-f2f0-4b31-803e-90f0fad362cb", "checkpoint_id": "step-1" }
+      }
+    },
+    {
+      "protocol_version": 1, "task_id": "a6ab9f87-f2f0-4b31-803e-90f0fad362cb", "seq": 14,
+      "payload": {
+        "type": "cancelled",
+        "checkpoint": { "project_id": "b6ab9f87-f2f0-4b31-803e-90f0fad362cb", "run_id": "c6ab9f87-f2f0-4b31-803e-90f0fad362cb", "checkpoint_id": "step-1" }
+      }
+    },
+    {
+      "protocol_version": 1, "task_id": "d6ab9f87-f2f0-4b31-803e-90f0fad362cb", "seq": 2,
+      "payload": { "type": "failed", "error": { "code": "encode_failed", "stage": "mux", "message": "Encoding failed", "evidence": ["FFmpeg exited"], "actions": ["Check the output directory"], "log_path": null } }
+    },
+    {
+      "protocol_version": 1, "task_id": "e6ab9f87-f2f0-4b31-803e-90f0fad362cb", "seq": 3,
+      "payload": {
+        "type": "completed",
+        "result": { "kind": "resources", "artifact": { "ready": true, "items": [{ "resource": { "id": "worker", "version": "1" }, "identity": null, "ready": true, "path": "/资源/worker", "reason": null }] } }
+      }
+    }
+  ],
+  "resource_snapshot": {
+    "task_id": "e6ab9f87-f2f0-4b31-803e-90f0fad362cb",
+    "project_id": null, "run_id": null, "job": "prepare_resources", "status": "completed", "last_seq": 3,
+    "latest_event": null, "error": null, "checkpoint": null, "metrics": null,
+    "progress": { "stage": "resources/download", "completed": 42, "total": 42 },
+    "result": { "kind": "resources", "artifact": { "ready": true, "items": [{ "resource": { "id": "worker", "version": "1" }, "identity": null, "ready": true, "path": "/资源/worker", "reason": null }] } }
+  },
+  "metrics_request": { "project_id": "b6ab9f87-f2f0-4b31-803e-90f0fad362cb", "run_id": "c6ab9f87-f2f0-4b31-803e-90f0fad362cb", "offset": 4, "limit": 1000 }
+}

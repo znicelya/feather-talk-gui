@@ -2,6 +2,7 @@
 pub mod assets;
 pub mod config;
 pub mod error;
+pub mod history;
 pub mod project;
 pub mod protocol;
 pub use assets::*;

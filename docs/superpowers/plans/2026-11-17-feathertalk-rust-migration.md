@@ -10,7 +10,7 @@
 
 **Spec:** [已确认设计](../specs/2026-11-17-feathertalk-rust-migration-design.md)。执行者先读设计再读本计划。全部相对路径以 `feather-talk-gui/` 为根目录。
 
-**当前进度（2026-11-19）：** Task 1–12 已完成并经过审查。Windows CPU 与 RTX 2060 CUDA 短素材训练、取消保存及重启导出已通过；RTX 2060 上也已验证训练步内取消、续训中强制退出及恢复。详见 [Task 12 阶段计划](2026-11-18-feathertalk-worker-stages.md)及[实测记录](../../validation/installed-worker.md)。正在接入 Task 13 的 Tauri 项目与任务服务。应用界面、多平台和其他显卡实机验收、真实素材效果、安装及整机断网验证仍待完成。
+**当前进度（2026-11-19）：** Task 1–12 已完成并经过审查。Windows CPU 与 RTX 2060 CUDA 短素材训练、取消保存及重启导出已通过，见 [Task 12 实测记录](../../validation/installed-worker.md)。Task 13 的 [Tauri 桥接](../../validation/desktop-bridge.md) 已在 Windows WebView 验证 RTX 2060 设备发现、续训、实时指标、MP4 导出与预览。接下来是 Task 14 的人物和资源界面。其他显卡与系统实机验收、真实素材效果、安装及整机断网验证仍待完成。
 
 ## Global Constraints
 
@@ -214,11 +214,13 @@ Rust 中标注为 `Result<T>` 的自有接口均使用 core 的 `type Result<T> 
 
 **Interfaces:** 下列 Commands 的结果均包裹 core Result：`list_projects() -> Vec<ProjectSummary>`、`create_project(NewProject) -> ProjectSummary`、`get_project(ProjectId) -> ProjectManifest`、`list_devices() -> Vec<DeviceDescriptor>`、`get_resources(TargetPlatform) -> ResourceInventory`、`prepare_resources(ResourceSelection) -> TaskId`、`start_training(TrainRequest) -> TaskId`、`start_generation(GenerateRequest) -> TaskId`、`cancel_task(TaskId) -> ()`、`get_task() -> Option<TaskSnapshot>`、`read_metrics(MetricsPageRequest) -> MetricsPage`。命令委托 AppState，`AppState::snapshot(&self) -> Result<Option<TaskSnapshot>>` 对应 get_task。`list_devices` 使用 worker Ready 中的 core DeviceDescriptor，不在 Tauri 主进程引入 Burn 计算。前端 `api` 导出 camelCase 包装；事件名固定 `feathertalk://task`，仅转发有任务 ID 的任务事件。快照保留任务、项目、训练 run、状态、最近 seq、进度、指标、已提交检查点与错误；资源任务没有项目，生成没有训练 run。指标页沿用 core 的 `offset`、`limit`、`next_offset`，按该 run 的持久化记录分页。
 
-- [ ] **Step 1:** `app_service` 写 `double_start_has_one_owner`、`reconnect_returns_snapshot`、`project_switch_does_not_reassign_events`、`unicode_project_roundtrip`；从同一公共 JSON fixture 检查 Rust/TS 事件契约；项目损坏返回具体路径/恢复方向。关键断言：`assert_eq!(app.snapshot()?.unwrap().task_id, first_id); assert_eq!(second_start.unwrap_err().code, ErrorCode::Busy);`。
-- [ ] **Step 2:** `cargo test -p feather-talk-gui --test app_service`，预期服务接口未实现 FAIL。
-- [ ] **Step 3:** 注册命令、注入 ResourceManager/WorkerHost/项目索引，独立事件转发与退出处理；浏览器只经类型化命令触发本地组件。启用所需文件选择/打开目录能力及受控本地视频访问，采用 Rust 路径调用启动已校验组件；不向前端开放任意 shell。关闭活动训练时走取消保存状态，不能假装已经保存完成。
-- [ ] **Step 4:** 重跑服务测试并 `pnpm build`、`cargo check -p feather-talk-gui`，预期全部通过；Tauri 中选择真实项目后能启动 Task 12 的完整任务且持续接收事件。
-- [ ] **Step 5:** 提交 `feat: expose project and task services to the desktop UI`。
+- [x] **Step 1:** `app_service` 与任务状态测试覆盖单任务占用、重连、切换项目与迟到事件、关闭等待、Unicode 路径迁移和损坏提示；Rust 与 TypeScript 校验同一 [JSON 样例](../../../contracts/desktop-fixture.json)。
+- [x] **Step 2:** `cargo test -p feather-talk-gui --test app_service` 已复现服务接口缺失（退出码 101，`.artifacts/task13-logs/service-red.log`）。
+- [x] **Step 3:** 注册命令、项目索引、资源管理与后台 worker；接入原生文件选择、成品目录打开与已完成 MP4 的精确访问范围。关闭活动窗口会请求取消并等待终态和进程清理。设备发现可在没有项目时运行，发现会话拒绝训练和生成。
+- [x] **Step 4:** Rust 服务/契约/资源/worker/历史测试、`pnpm test:contracts`、`pnpm build` 和 `cargo check -p feather-talk-gui` 通过。Windows WebView 从已校验的 RTX 2060 包完成项目打开、生成、受控播放及续训；一次续训从 step 2 到 step 3 并收到 loss 与提交事件。
+- [x] **Step 5:** 提交 `feat: expose project and task services to the desktop UI`。
+
+执行记录：[桌面桥接实测](../../validation/desktop-bridge.md)使用本地开发资源和短素材。人物、资源、训练和生成页面分别由 Task 14–16 完成。
 
 ## Task 14: React 应用、人物项目与资源/设备页面
 

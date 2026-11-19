@@ -1,14 +1,14 @@
 //! Durable sampled history. Offsets count records, never optimizer steps.
 use super::{losses::LossParts, state::TrainingState};
 use crate::ExecutionDevice;
+pub use feathertalk_core::history::metrics_page;
+use feathertalk_core::history::{MAX_METRIC_RECORD_BYTES, metrics_path, read_metric_record};
 use feathertalk_core::*;
 use std::{
     fs::{File, OpenOptions},
-    io::{BufRead, BufReader, Write},
+    io::{BufReader, Write},
     path::{Path, PathBuf},
 };
-const MAX_LINE: u64 = 65536;
-const MAX_PAGE: u32 = 1000;
 #[cfg(test)]
 thread_local! {pub(super) static READ_ONLY_WRITE:std::cell::Cell<bool>=const {std::cell::Cell::new(false)};}
 fn error(e: impl std::fmt::Display) -> AppError {
@@ -20,90 +20,7 @@ fn error(e: impl std::fmt::Display) -> AppError {
 }
 fn path(root: &Path) -> Result<PathBuf> {
     let root = std::fs::canonicalize(root).map_err(error)?;
-    let relative = super::checkpoint::read_project(&root)?.metrics_path;
-    if relative.as_os_str().is_empty()
-        || relative
-            .components()
-            .any(|c| !matches!(c, std::path::Component::Normal(_)))
-    {
-        return Err(error("Unsafe metrics path"));
-    }
-    let destination = root.join(relative);
-    let parent = std::fs::canonicalize(
-        destination
-            .parent()
-            .ok_or_else(|| error("Missing metrics parent"))?,
-    )
-    .map_err(error)?;
-    if !parent.starts_with(&root) {
-        return Err(error("Metrics path escapes project"));
-    }
-    if destination.exists()
-        && !std::fs::canonicalize(&destination)
-            .map_err(error)?
-            .starts_with(&root)
-    {
-        return Err(error("Metrics file escapes project"));
-    }
-    Ok(destination)
-}
-fn record(reader: &mut BufReader<File>) -> Result<Option<TrainingMetrics>> {
-    use std::io::Read;
-    let mut bytes = Vec::new();
-    let n = reader
-        .take(MAX_LINE + 1)
-        .read_until(b'\n', &mut bytes)
-        .map_err(error)?;
-    if n == 0 {
-        return Ok(None);
-    }
-    if n as u64 > MAX_LINE {
-        return Err(error("Metrics record exceeds 64 KiB"));
-    }
-    if bytes.last() != Some(&b'\n') {
-        return Err(error(
-            "Interrupted trailing metrics record; repair required before append",
-        ));
-    }
-    let value: TrainingMetrics = serde_json::from_slice(&bytes).map_err(error)?;
-    value.validate()?;
-    Ok(Some(value))
-}
-pub fn metrics_page(root: &Path, request: &MetricsPageRequest) -> Result<MetricsPage> {
-    if request.limit == 0 || request.limit > MAX_PAGE {
-        return Err(error("Metrics page limit must be 1..=1000"));
-    }
-    if super::checkpoint::read_project(root)?.id != request.project_id {
-        return Err(error("Wrong project root"));
-    }
-    let mut reader = BufReader::new(File::open(path(root)?).map_err(error)?);
-    let mut offset = 0u64;
-    let mut items = Vec::new();
-    let mut more = false;
-    while let Some(m) = record(&mut reader)? {
-        if m.project_id != request.project_id {
-            return Err(error("Metrics project mismatch"));
-        }
-        if m.run_id != request.run_id {
-            continue;
-        }
-        if offset >= request.offset {
-            if items.len() == request.limit as usize {
-                more = true;
-                break;
-            }
-            items.push(m);
-        }
-        offset = offset
-            .checked_add(1)
-            .ok_or_else(|| error("Metrics offset overflow"))?;
-    }
-    Ok(MetricsPage {
-        project_id: request.project_id,
-        run_id: request.run_id,
-        next_offset: more.then_some(offset),
-        items,
-    })
+    metrics_path(&root, &super::checkpoint::read_project(&root)?.metrics_path)
 }
 /// One writer per project history (independent readers remain available). elapsed_ms is cumulative monotonic run time, also after
 /// restart. Open scans bounded records (constant memory) and rejects torn tails.
@@ -121,14 +38,6 @@ impl SampledMetrics {
             return Err(error("Wrong project root"));
         }
         let destination = path(root)?;
-        if destination.exists()
-            && std::fs::symlink_metadata(&destination)
-                .map_err(error)?
-                .file_type()
-                .is_symlink()
-        {
-            return Err(error("Metrics symlink rejected"));
-        }
         // Lock a sidecar: Windows exclusive file locks otherwise prevent UI
         // readers from reading the history while the training writer is alive.
         let lock = OpenOptions::new()
@@ -152,7 +61,7 @@ impl SampledMetrics {
         let mut reader = BufReader::new(file.try_clone().map_err(error)?);
         let mut last_ms: Option<u64> = None;
         let mut last_step = None;
-        while let Some(m) = record(&mut reader)? {
+        while let Some(m) = read_metric_record(&mut reader)? {
             if m.project_id != project {
                 return Err(error("Metrics project mismatch"));
             }
@@ -228,7 +137,7 @@ impl SampledMetrics {
         m.validate()?;
         let mut bytes = serde_json::to_vec(&m).map_err(error)?;
         bytes.push(b'\n');
-        if bytes.len() as u64 > MAX_LINE {
+        if bytes.len() as u64 > MAX_METRIC_RECORD_BYTES {
             return Err(error("Metrics record exceeds 64 KiB"));
         }
         // Reopen rejects a partial tail after any interrupted append.

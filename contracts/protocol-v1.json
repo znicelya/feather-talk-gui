@@ -1,8 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "FeatherTalk protocol v1",
-  "description": "JSON Lines worker transport. Sequence is monotonically increasing per worker process. Ready has no task ID; every task event requires a UUID. Paths in manifests are relative to their owning project or asset root. Semantic resource checks are performed by later engine/storage layers. Non-finite metrics are forbidden on the wire.",
+  "description": "JSON Lines worker transport and desktop task projection. Sequence is monotonically increasing within each worker process or local resource task. Ready and RequestRejected have no task ID; every task event requires a UUID. Non-finite metrics are forbidden on the wire.",
   "oneOf": [
+    { "$ref": "#/$defs/WorkerPrelude" },
     {
       "$ref": "#/$defs/WorkerRequest"
     },
@@ -11,6 +12,85 @@
     }
   ],
   "$defs": {
+    "TargetPlatform": {
+      "type": "object",
+      "properties": {
+        "os": { "enum": ["windows", "linux", "macos"] },
+        "architecture": { "enum": ["x86_64", "aarch64"] },
+        "backend": { "enum": ["cpu", "cuda", "vulkan", "metal", "any"] }
+      },
+      "required": ["os", "architecture", "backend"],
+      "additionalProperties": false
+    },
+    "ProjectBinding": {
+      "type": "object",
+      "properties": {
+        "project_id": { "$ref": "#/$defs/ProjectId" },
+        "directory": { "type": "string" }
+      },
+      "required": ["project_id", "directory"],
+      "additionalProperties": false
+    },
+    "RuntimeComponent": {
+      "type": "object",
+      "properties": {
+        "target": { "anyOf": [{ "$ref": "#/$defs/TargetPlatform" }, { "type": "null" }] },
+        "pin": { "$ref": "#/$defs/ResourcePin" },
+        "root": { "type": "string" },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": { "path": { "type": "string" }, "sha256": { "type": "string" } },
+            "required": ["path", "sha256"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": ["target", "pin", "root", "files"],
+      "additionalProperties": false
+    },
+    "WorkerPrelude": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "protocol_version": { "const": 1 },
+            "context": { "$ref": "#/$defs/WorkerContext" }
+          },
+          "required": ["protocol_version", "context"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "description": "Projectless Hello and Shutdown only. Start is rejected.",
+          "properties": {
+            "protocol_version": { "const": 1 },
+            "target": { "$ref": "#/$defs/TargetPlatform" },
+            "components": { "type": "array", "items": { "$ref": "#/$defs/RuntimeComponent" } },
+            "cuda_root": { "type": ["string", "null"] }
+          },
+          "required": ["protocol_version", "target", "components", "cuda_root"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "WorkerContext": {
+      "type": "object",
+      "properties": {
+        "protocol_version": { "const": 1 },
+        "projects": { "type": "array", "minItems": 1, "maxItems": 1, "items": { "$ref": "#/$defs/ProjectBinding" } },
+        "target": { "$ref": "#/$defs/TargetPlatform" },
+        "components": { "type": "array", "items": { "$ref": "#/$defs/RuntimeComponent" } },
+        "assets": { "type": "string" },
+        "ffmpeg": { "type": "string" },
+        "ffprobe": { "type": "string" },
+        "probe_runner": { "type": "string" },
+        "cuda_root": { "type": ["string", "null"] }
+      },
+      "required": ["protocol_version", "projects", "target", "components", "assets", "ffmpeg", "ffprobe", "probe_runner", "cuda_root"],
+      "additionalProperties": false
+    },
     "TaskId": {
       "type": "string",
       "format": "uuid"
@@ -162,13 +242,16 @@
     "TrainConfig": {
       "type": "object",
       "properties": {
+        "seed": { "type": "integer", "minimum": 0, "default": 42 },
+        "prefetch_capacity": { "type": "integer", "minimum": 0, "maximum": 32, "default": 2 },
         "epochs": {
           "type": "integer",
           "minimum": 1
         },
         "batch_size": {
           "type": "integer",
-          "minimum": 1
+          "minimum": 1,
+          "maximum": 1024
         },
         "lr": {
           "type": "number",
@@ -362,6 +445,7 @@
     "TrainRequest": {
       "type": "object",
       "properties": {
+        "batch_mode": { "enum": ["auto", "fixed"], "default": "auto" },
         "project_id": {
           "$ref": "#/$defs/ProjectId"
         },
@@ -458,7 +542,8 @@
       "type": "string",
       "enum": [
         "train",
-        "generate"
+        "generate",
+        "prepare_resources"
       ]
     },
     "WorkerRequest": {
@@ -723,11 +808,61 @@
             "artifact"
           ],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "resources" },
+            "artifact": { "$ref": "#/$defs/ResourceInventory" }
+          },
+          "required": ["kind", "artifact"],
+          "additionalProperties": false
         }
       ]
     },
+    "ResourcePin": {
+      "type": "object",
+      "properties": { "id": { "type": "string" }, "version": { "type": "string" } },
+      "required": ["id", "version"],
+      "additionalProperties": false
+    },
+    "ResourceInventory": {
+      "type": "object",
+      "properties": {
+        "ready": { "type": "boolean" },
+        "items": { "type": "array", "items": { "$ref": "#/$defs/ResourceStatus" } }
+      },
+      "required": ["ready", "items"],
+      "additionalProperties": false
+    },
+    "ResourceStatus": {
+      "type": "object",
+      "properties": {
+        "resource": { "$ref": "#/$defs/ResourcePin" },
+        "identity": { "anyOf": [{ "$ref": "#/$defs/ModelIdentity" }, { "type": "null" }] },
+        "path": { "type": ["string", "null"] },
+        "ready": { "type": "boolean" },
+        "reason": { "type": ["string", "null"] }
+      },
+      "required": ["resource", "identity", "path", "ready", "reason"],
+      "additionalProperties": false
+    },
     "EventPayload": {
       "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "request_rejected" },
+            "request": { "enum": ["hello", "start", "cancel", "shutdown"] },
+            "requested_task_id": { "anyOf": [{ "$ref": "#/$defs/TaskId" }, { "type": "null" }] },
+            "error": { "$ref": "#/$defs/AppError" }
+          },
+          "required": ["type", "request", "requested_task_id", "error"],
+          "additionalProperties": false,
+          "if": { "properties": { "request": { "enum": ["start", "cancel"] } } },
+          "then": { "properties": { "requested_task_id": { "$ref": "#/$defs/TaskId" } } },
+          "else": { "properties": { "requested_task_id": { "type": "null" } } }
+        },
         {
           "type": "object",
           "properties": {
@@ -967,7 +1102,7 @@
               "payload": {
                 "properties": {
                   "type": {
-                    "const": "ready"
+                    "enum": ["ready", "request_rejected"]
                   }
                 }
               }
@@ -995,6 +1130,7 @@
       "enum": [
         "queued",
         "running",
+        "cancelling",
         "completed",
         "cancelled",
         "failed"
@@ -1007,7 +1143,10 @@
           "$ref": "#/$defs/TaskId"
         },
         "project_id": {
-          "$ref": "#/$defs/ProjectId"
+          "anyOf": [{ "$ref": "#/$defs/ProjectId" }, { "type": "null" }]
+        },
+        "run_id": {
+          "anyOf": [{ "$ref": "#/$defs/TrainingRunId" }, { "type": "null" }]
         },
         "job": {
           "$ref": "#/$defs/JobKind"
@@ -1039,6 +1178,15 @@
             }
           ]
         },
+        "progress": {
+          "anyOf": [{ "$ref": "#/$defs/TaskProgress" }, { "type": "null" }]
+        },
+        "metrics": {
+          "anyOf": [{ "$ref": "#/$defs/TrainingMetrics" }, { "type": "null" }]
+        },
+        "checkpoint": {
+          "anyOf": [{ "$ref": "#/$defs/ModelRef" }, { "type": "null" }]
+        },
         "error": {
           "anyOf": [
             {
@@ -1053,13 +1201,27 @@
       "required": [
         "task_id",
         "project_id",
+        "run_id",
         "job",
         "status",
         "last_seq",
         "latest_event",
         "result",
-        "error"
+        "error",
+        "progress",
+        "metrics",
+        "checkpoint"
       ],
+      "additionalProperties": false
+    },
+    "TaskProgress": {
+      "type": "object",
+      "properties": {
+        "stage": { "type": "string" },
+        "completed": { "type": "integer", "minimum": 0 },
+        "total": { "type": ["integer", "null"], "minimum": 0 }
+      },
+      "required": ["stage", "completed", "total"],
       "additionalProperties": false
     },
     "MetricsPageRequest": {
@@ -1077,7 +1239,8 @@
         },
         "limit": {
           "type": "integer",
-          "minimum": 1
+          "minimum": 1,
+          "maximum": 1000
         }
       },
       "required": [

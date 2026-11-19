@@ -72,3 +72,20 @@ pub struct WorkerBootstrap {
     pub protocol_version: u32,
     pub context: WorkerContext,
 }
+
+/// A verified Hello-only session. Discovery never binds a project or loads models.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerDiscovery {
+    pub protocol_version: u32,
+    pub target: TargetPlatform,
+    pub components: Vec<RuntimeComponent>,
+    pub cuda_root: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum WorkerPrelude {
+    Job(WorkerBootstrap),
+    Discovery(WorkerDiscovery),
+}

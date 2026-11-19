@@ -1,10 +1,14 @@
 //! Reverify explicit runtime inputs before accepting control requests.
 use feathertalk_core::*;
-use std::{collections::HashSet, fs};
-pub(crate) fn devices(c: &WorkerContext) -> Result<Vec<DeviceDescriptor>> {
+use std::{
+    collections::HashSet,
+    fs,
+    path::{Path, PathBuf},
+};
+pub(crate) fn devices(target: &TargetPlatform) -> Result<Vec<DeviceDescriptor>> {
     let devices = feathertalk_engine::probe_devices()?
         .into_iter()
-        .filter(|d| match c.target.backend.as_str() {
+        .filter(|d| match target.backend.as_str() {
             "cpu" => matches!(d.backend, BackendKind::Cpu | BackendKind::Flex),
             "cuda" => d.backend == BackendKind::Cuda,
             "vulkan" => d.backend == BackendKind::Vulkan,
@@ -22,8 +26,6 @@ pub(crate) fn devices(c: &WorkerContext) -> Result<Vec<DeviceDescriptor>> {
     Ok(devices)
 }
 pub(crate) fn validate_context(c: &WorkerContext) -> Result<()> {
-    use sha2::{Digest, Sha256};
-    use std::io::Read;
     if c.protocol_version != PROTOCOL_VERSION || c.projects.len() != 1 {
         return Err(protocol_error(
             "Context requires protocol v1 and one explicit project",
@@ -43,15 +45,75 @@ pub(crate) fn validate_context(c: &WorkerContext) -> Result<()> {
             return Err(protocol_error("Bootstrap project ID differs from manifest"));
         }
     }
-    let backend_ok = match c.target.backend.as_str() {
+    let verified = validate_runtime(&c.target, &c.components, c.cuda_root.as_deref())?;
+    let probe = fs::canonicalize(&c.probe_runner).map_err(protocol_error)?;
+    if !c.components.iter().any(|component| {
+        component.target.as_ref() == Some(&c.target)
+            && component
+                .files
+                .iter()
+                .any(|f| fs::canonicalize(&f.path).ok().as_ref() == Some(&probe))
+    }) {
+        return Err(protocol_error(
+            "Probe is not bound to a matching target/backend component",
+        ));
+    }
+    for path in [
+        &c.ffmpeg,
+        &c.ffprobe,
+        &c.probe_runner,
+        &c.assets.join("manifest.json"),
+    ] {
+        if !path.is_absolute()
+            || !verified.contains(&fs::canonicalize(path).map_err(protocol_error)?)
+        {
+            return Err(protocol_error("Runtime path is outside verified inventory"));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_discovery(discovery: &WorkerDiscovery) -> Result<()> {
+    if discovery.protocol_version != PROTOCOL_VERSION {
+        return Err(protocol_error("Discovery version mismatch"));
+    }
+    let verified = validate_runtime(
+        &discovery.target,
+        &discovery.components,
+        discovery.cuda_root.as_deref(),
+    )?;
+    let binary = fs::canonicalize(std::env::current_exe().map_err(protocol_error)?)
+        .map_err(protocol_error)?;
+    if !verified.contains(&binary)
+        || !discovery.components.iter().any(|c| {
+            c.pin.id == "worker"
+                && c.target.as_ref() == Some(&discovery.target)
+                && c.files.iter().any(|f| f.path == binary)
+        })
+    {
+        return Err(protocol_error(
+            "Discovery worker must be in the verified target inventory",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_runtime(
+    target: &TargetPlatform,
+    components: &[RuntimeComponent],
+    cuda_root: Option<&Path>,
+) -> Result<HashSet<PathBuf>> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let backend_ok = match target.backend.as_str() {
         "cpu" => cfg!(feature = "flex"),
         "cuda" => cfg!(feature = "cuda"),
         "vulkan" => cfg!(feature = "vulkan"),
         "metal" => cfg!(feature = "metal"),
         _ => false,
     };
-    if c.target.os != std::env::consts::OS
-        || c.target.architecture != std::env::consts::ARCH
+    if target.os != std::env::consts::OS
+        || target.architecture != std::env::consts::ARCH
         || !backend_ok
     {
         return Err(AppError::new(
@@ -61,14 +123,14 @@ pub(crate) fn validate_context(c: &WorkerContext) -> Result<()> {
         ));
     }
     let mut verified = HashSet::new();
-    for component in &c.components {
+    for component in components {
         if component.pin.id.is_empty() || component.pin.version.is_empty() {
             return Err(protocol_error("Missing resource pin"));
         }
         if component.target.as_ref().is_some_and(|t| {
-            t.os != c.target.os
-                || t.architecture != c.target.architecture
-                || (t.backend != "any" && t.backend != c.target.backend)
+            t.os != target.os
+                || t.architecture != target.architecture
+                || (t.backend != "any" && t.backend != target.backend)
         }) {
             return Err(protocol_error(
                 "Component target differs from worker target",
@@ -108,20 +170,8 @@ pub(crate) fn validate_context(c: &WorkerContext) -> Result<()> {
             verified.insert(path);
         }
     }
-    let probe = fs::canonicalize(&c.probe_runner).map_err(protocol_error)?;
-    if !c.components.iter().any(|component| {
-        component.target.as_ref() == Some(&c.target)
-            && component
-                .files
-                .iter()
-                .any(|f| fs::canonicalize(&f.path).ok().as_ref() == Some(&probe))
-    }) {
-        return Err(protocol_error(
-            "Probe is not bound to a matching target/backend component",
-        ));
-    }
-    if let Some(root) = &c.cuda_root {
-        if c.target.backend != "cuda"
+    if let Some(root) = cuda_root {
+        if target.backend != "cuda"
             || !root.is_absolute()
             || !verified.contains(
                 &fs::canonicalize(root.join("nvvm/libdevice/libdevice.10.bc"))
@@ -130,24 +180,12 @@ pub(crate) fn validate_context(c: &WorkerContext) -> Result<()> {
         {
             return Err(protocol_error("CUDA runtime is outside verified inventory"));
         }
-    } else if c.target.backend == "cuda" {
+    } else if target.backend == "cuda" {
         return Err(protocol_error(
             "CUDA worker requires explicit verified libdevice root",
         ));
     }
-    for path in [
-        &c.ffmpeg,
-        &c.ffprobe,
-        &c.probe_runner,
-        &c.assets.join("manifest.json"),
-    ] {
-        if !path.is_absolute()
-            || !verified.contains(&fs::canonicalize(path).map_err(protocol_error)?)
-        {
-            return Err(protocol_error("Runtime path is outside verified inventory"));
-        }
-    }
-    Ok(())
+    Ok(verified)
 }
 
 pub(crate) fn normalize_generation(request: &mut GenerateRequest) -> Result<()> {

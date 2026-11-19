@@ -24,7 +24,7 @@ impl TaskObserver for Observe {
     }
 }
 pub struct WorkerRuntime {
-    context: WorkerContext,
+    prelude: WorkerPrelude,
     owner: EventOwner,
     hello: bool,
     current: Option<(TaskId, Cancellation, JoinHandle<()>)>,
@@ -32,9 +32,25 @@ pub struct WorkerRuntime {
 }
 impl WorkerRuntime {
     pub fn new(context: WorkerContext, owner: EventOwner) -> Result<Self> {
-        validate_context(&context)?;
+        Self::from_prelude(
+            WorkerPrelude::Job(WorkerBootstrap {
+                protocol_version: PROTOCOL_VERSION,
+                context,
+            }),
+            owner,
+        )
+    }
+
+    pub fn from_prelude(prelude: WorkerPrelude, owner: EventOwner) -> Result<Self> {
+        match &prelude {
+            WorkerPrelude::Job(bootstrap) if bootstrap.protocol_version == PROTOCOL_VERSION => {
+                validate_context(&bootstrap.context)?
+            }
+            WorkerPrelude::Job(_) => return Err(protocol_error("Bootstrap version mismatch")),
+            WorkerPrelude::Discovery(discovery) => crate::context::validate_discovery(discovery)?,
+        }
         Ok(Self {
-            context,
+            prelude,
             owner,
             hello: false,
             current: None,
@@ -79,13 +95,21 @@ impl WorkerRuntime {
                 if self.hello || protocol_version != PROTOCOL_VERSION {
                     return Err(protocol_error("Invalid or duplicate Hello"));
                 }
-                let devices = crate::context::devices(&self.context)?;
+                let (target, components, runs_jobs) = match &self.prelude {
+                    WorkerPrelude::Job(bootstrap) => (
+                        &bootstrap.context.target,
+                        &bootstrap.context.components,
+                        true,
+                    ),
+                    WorkerPrelude::Discovery(discovery) => {
+                        (&discovery.target, &discovery.components, false)
+                    }
+                };
+                let devices = crate::context::devices(target)?;
                 self.owner.control(EventPayload::Ready {
                     capabilities: WorkerCapabilities {
                         engine_version: env!("CARGO_PKG_VERSION").into(),
-                        components: self
-                            .context
-                            .components
+                        components: components
                             .iter()
                             .map(|c| ComponentCapability {
                                 name: c.pin.id.clone(),
@@ -93,8 +117,8 @@ impl WorkerRuntime {
                                 available: true,
                             })
                             .collect(),
-                        training: true,
-                        generation: true,
+                        training: runs_jobs,
+                        generation: runs_jobs,
                     },
                     devices,
                 })?;
@@ -105,6 +129,9 @@ impl WorkerRuntime {
                 if !self.hello {
                     return Err(protocol_error("Hello required before Start"));
                 }
+                let WorkerPrelude::Job(bootstrap) = &self.prelude else {
+                    return Err(protocol_error("A discovery session does not run jobs"));
+                };
                 if self.current.is_some() {
                     return Err(AppError::new(
                         ErrorCode::Busy,
@@ -119,7 +146,7 @@ impl WorkerRuntime {
                 self.owner.start(task_id, kind)?;
                 let cancel = Cancellation::new();
                 let flag = cancel.clone();
-                let context = self.context.clone();
+                let context = bootstrap.context.clone();
                 let owner = self.owner.clone();
                 let handle = std::thread::spawn(move || {
                     let observer = Observe {
@@ -211,7 +238,7 @@ fn execute(
     }
     let device = engine::open_device(&engine::resolve_device(
         policy,
-        &crate::context::devices(c)?,
+        &crate::context::devices(&c.target)?,
     )?)?;
     let tools = MediaTools {
         ffmpeg: c.ffmpeg.clone(),
@@ -296,22 +323,25 @@ fn execute(
 mod backpressure_tests {
     use super::*;
     use std::time::Duration;
-    fn fixture_context() -> WorkerContext {
-        WorkerContext {
+    fn fixture_context() -> WorkerPrelude {
+        WorkerPrelude::Job(WorkerBootstrap {
             protocol_version: 1,
-            projects: vec![],
-            components: vec![],
-            target: TargetPlatform {
-                os: "test".into(),
-                architecture: "test".into(),
-                backend: "cpu".into(),
+            context: WorkerContext {
+                protocol_version: 1,
+                projects: vec![],
+                components: vec![],
+                target: TargetPlatform {
+                    os: "test".into(),
+                    architecture: "test".into(),
+                    backend: "cpu".into(),
+                },
+                assets: ".".into(),
+                ffmpeg: ".".into(),
+                ffprobe: ".".into(),
+                probe_runner: ".".into(),
+                cuda_root: None,
             },
-            assets: ".".into(),
-            ffmpeg: ".".into(),
-            ffprobe: ".".into(),
-            probe_runner: ".".into(),
-            cuda_root: None,
-        }
+        })
     }
     #[test]
     fn stalled_output_keeps_cancel_responsive_and_terminal_lossless() {
@@ -343,7 +373,7 @@ mod backpressure_tests {
         });
         let context = fixture_context();
         let mut runtime = WorkerRuntime {
-            context,
+            prelude: context,
             owner,
             hello: true,
             current: Some((task, cancel, handle)),
@@ -395,7 +425,7 @@ mod backpressure_tests {
             gate.recv().unwrap(); // Deliberately descheduled after terminal publication.
         });
         let mut runtime = WorkerRuntime {
-            context: fixture_context(),
+            prelude: fixture_context(),
             owner,
             hello: true,
             current: Some((first, Cancellation::new(), thread)),
@@ -452,7 +482,7 @@ mod backpressure_tests {
             {}
         });
         let runtime = WorkerRuntime {
-            context: fixture_context(),
+            prelude: fixture_context(),
             owner,
             hello: true,
             current: Some((task, Cancellation::new(), thread)),

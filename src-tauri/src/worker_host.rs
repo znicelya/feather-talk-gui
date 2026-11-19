@@ -36,9 +36,21 @@ pub struct WorkerHost {
     job: Option<JobKind>,
     project: Option<ProjectId>,
     destination: Option<std::path::PathBuf>,
+    discovery_only: bool,
+    rejected: Option<(RequestKind, Option<TaskId>)>,
 }
 impl WorkerHost {
     pub fn spawn(component: &Path, context: WorkerContext) -> Result<Self> {
+        Self::spawn_prelude(
+            component,
+            WorkerPrelude::Job(WorkerBootstrap {
+                protocol_version: PROTOCOL_VERSION,
+                context,
+            }),
+        )
+    }
+
+    pub(crate) fn spawn_prelude(component: &Path, prelude: WorkerPrelude) -> Result<Self> {
         if !component.is_absolute() {
             return Err(protocol_error("Worker component must be absolute"));
         }
@@ -49,25 +61,21 @@ impl WorkerHost {
             .stderr(Stdio::piped());
         // CUDA_PATH is scoped only to this owned child; never mutate the GUI environment.
         command.env_remove("CUDA_PATH");
-        if let Some(root) = &context.cuda_root {
+        let (cuda_root, components, discovery_only) = match &prelude {
+            WorkerPrelude::Job(job) => (&job.context.cuda_root, &job.context.components, false),
+            WorkerPrelude::Discovery(discovery) => {
+                (&discovery.cuda_root, &discovery.components, true)
+            }
+        };
+        if let Some(root) = cuda_root {
             let lib = root.join("nvvm/libdevice/libdevice.10.bc");
             let canonical = std::fs::canonicalize(&lib).map_err(protocol_error)?;
-            if !context.components.iter().any(|c| {
-                c.files
-                    .iter()
-                    .any(|f| std::fs::canonicalize(&f.path).ok().as_ref() == Some(&canonical))
-            }) {
-                return Err(protocol_error(
-                    "CUDA libdevice is not in explicit inventory",
-                ));
-            }
             use sha2::{Digest, Sha256};
-            let record = context
-                .components
+            let record = components
                 .iter()
                 .flat_map(|c| &c.files)
                 .find(|f| std::fs::canonicalize(&f.path).ok().as_ref() == Some(&canonical))
-                .unwrap();
+                .ok_or_else(|| protocol_error("CUDA libdevice is not in explicit inventory"))?;
             let actual = format!(
                 "{:x}",
                 Sha256::digest(std::fs::read(&canonical).map_err(protocol_error)?)
@@ -148,11 +156,10 @@ impl WorkerHost {
             job: None,
             project: None,
             destination: None,
+            discovery_only,
+            rejected: None,
         };
-        host.send(&WorkerBootstrap {
-            protocol_version: PROTOCOL_VERSION,
-            context,
-        })?;
+        host.send(&prelude)?;
         host.send(&WorkerRequest::Hello {
             protocol_version: PROTOCOL_VERSION,
         })?;
@@ -174,6 +181,9 @@ impl WorkerHost {
             .map_err(protocol_error)
     }
     pub fn start(&mut self, task_id: TaskId, mut job: JobSpec) -> Result<()> {
+        if self.discovery_only {
+            return Err(protocol_error("A discovery session does not run jobs"));
+        }
         if self.active.is_some() {
             return Err(AppError::new(
                 ErrorCode::Busy,
@@ -240,6 +250,7 @@ impl WorkerHost {
         self.send(&WorkerRequest::Cancel { task_id })
     }
     pub fn next_event(&mut self, timeout: std::time::Duration) -> Result<HostPoll> {
+        self.rejected = None;
         if self.ended {
             return Ok(HostPoll::Ended);
         }
@@ -260,8 +271,13 @@ impl WorkerHost {
                         }
                         self.ready = true;
                     }
-                    EventPayload::RequestRejected { error, .. } => {
+                    EventPayload::RequestRejected {
+                        error,
+                        request,
+                        requested_task_id,
+                    } => {
                         // Control rejection never releases the task owner, even before Started.
+                        self.rejected = Some((*request, *requested_task_id));
                         return Err(error.clone());
                     }
                     _ => {
@@ -325,6 +341,13 @@ impl WorkerHost {
                                 return self
                                     .fail(Some(protocol_error("Unexpected completed video")));
                             }
+                            EventPayload::Completed {
+                                result: ArtifactResult::Resources(_),
+                            } => {
+                                return self.fail(Some(protocol_error(
+                                    "Worker cannot publish resource installation results",
+                                )));
+                            }
                             EventPayload::Progress { stage, .. } => self.stage = stage.clone(),
                             EventPayload::CheckpointCommitted { model_ref } => {
                                 self.checkpoint = Some(model_ref.clone())
@@ -341,6 +364,9 @@ impl WorkerHost {
             Ok(Incoming::End(error)) => self.fail(error),
             Err(e) => self.fail(Some(protocol_error(e))),
         }
+    }
+    pub(crate) fn rejected_request(&self) -> Option<(RequestKind, Option<TaskId>)> {
+        self.rejected
     }
     fn fail(&mut self, cause: Option<AppError>) -> Result<HostPoll> {
         self.input.take();

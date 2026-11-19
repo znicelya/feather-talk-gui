@@ -4,12 +4,9 @@ use std::io::{self, BufReader};
 fn run() -> Result<()> {
     let mut input = BufReader::new(io::stdin().lock());
     let bytes = read_frame(&mut input)?.ok_or_else(|| protocol_error("Missing bootstrap"))?;
-    let bootstrap: WorkerBootstrap = serde_json::from_slice(&bytes).map_err(protocol_error)?;
-    if bootstrap.protocol_version != PROTOCOL_VERSION {
-        return Err(protocol_error("Bootstrap version mismatch"));
-    }
+    let prelude: WorkerPrelude = serde_json::from_slice(&bytes).map_err(protocol_error)?;
     let (tx, rx) = feathertalk_worker::runtime::event_channel();
-    let mut runtime = WorkerRuntime::new(bootstrap.context, tx.clone())?;
+    let mut runtime = WorkerRuntime::from_prelude(prelude, tx.clone())?;
     let writer = std::thread::spawn(move || feathertalk_worker::transport::run_output(rx));
     let result = (|| {
         while let Some(bytes) = read_frame(&mut input)? {

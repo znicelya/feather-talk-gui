@@ -119,12 +119,12 @@ fn executable_path<'a>(
 #[derive(Debug)]
 pub struct InstalledWorker {
     binary: PathBuf,
-    context: WorkerContext,
+    prelude: WorkerPrelude,
 }
 
 impl InstalledWorker {
     pub fn spawn(self) -> Result<WorkerHost> {
-        WorkerHost::spawn(&self.binary, self.context)
+        WorkerHost::spawn_prelude(&self.binary, self.prelude)
     }
 }
 
@@ -159,6 +159,58 @@ impl Installed {
 }
 
 impl ResourceManager {
+    fn selected_component(
+        &self,
+        selection: &ResourceSelection,
+        role: WorkerRole,
+    ) -> Result<Installed> {
+        let target = &selection.target;
+        let id = role.id;
+        let mut pins = selection.resources.iter().filter(|pin| pin.id == id);
+        let pin = pins
+            .next()
+            .ok_or_else(|| missing(format!("Select an installed {id} component")))?;
+        if pins.next().is_some() {
+            return Err(fail(format!("More than one resource selected for {id}")));
+        }
+        catalog::token(&pin.id)?;
+        catalog::token(&pin.version)?;
+        let path = self.root.join(&pin.id).join(&pin.version);
+        if !path.exists() {
+            return Err(missing(format!(
+                "Install {}/{} for backend {}",
+                pin.id, pin.version, target.backend
+            )));
+        }
+        let c = self.find(pin)?;
+        role.validate(&c, target)?;
+        let root = inventory::contained(&self.root, &path)?;
+        self.verify_installed(&root, &c)?;
+        Ok(Installed { root, component: c })
+    }
+
+    pub(crate) fn bind_discovery(&self, selection: &ResourceSelection) -> Result<InstalledWorker> {
+        let target = &selection.target;
+        validate_host_target(target)?;
+        let worker = self.selected_component(selection, WORKER)?;
+        let binary = worker.executable("feathertalk-worker", target)?;
+        let mut discovery = WorkerDiscovery {
+            protocol_version: PROTOCOL_VERSION,
+            target: target.clone(),
+            components: vec![worker.runtime()],
+            cuda_root: None,
+        };
+        if target.backend == "cuda" {
+            let cuda = self.selected_component(selection, CUDA)?;
+            discovery.cuda_root = Some(cuda.root.clone());
+            discovery.components.push(cuda.runtime());
+        }
+        Ok(InstalledWorker {
+            binary,
+            prelude: WorkerPrelude::Discovery(discovery),
+        })
+    }
+
     /// The job's checkpoint overrides only the selected asset bundle. Runtime pins stay explicit.
     pub fn bind_worker(
         &self,
@@ -167,14 +219,7 @@ impl ResourceManager {
         job: &JobSpec,
     ) -> Result<InstalledWorker> {
         let target = &selection.target;
-        catalog::validate_target(target)?;
-        if target.os != std::env::consts::OS || target.architecture != std::env::consts::ARCH {
-            return Err(AppError::new(
-                ErrorCode::UnsupportedBackend,
-                "resources",
-                "Cannot launch a worker for another platform",
-            ));
-        }
+        validate_host_target(target)?;
         let (project_id, reference) = match job {
             JobSpec::Train(request) => (request.project_id, request.resume.as_ref()),
             JobSpec::Generate(request) => (request.project_id, Some(&request.model_ref)),
@@ -216,24 +261,7 @@ impl ResourceManager {
                 )));
             }
         }
-        let selected = |role: WorkerRole| -> Result<Installed> {
-            let id = role.id;
-            let pin = pins
-                .get(id)
-                .ok_or_else(|| missing(format!("Select an installed {id} component")))?;
-            let path = self.root.join(&pin.id).join(&pin.version);
-            if !path.exists() {
-                return Err(missing(format!(
-                    "Install {}/{} for backend {}",
-                    pin.id, pin.version, target.backend
-                )));
-            }
-            let c = self.find(pin)?;
-            role.validate(&c, target)?;
-            let root = inventory::contained(&self.root, &path)?;
-            self.verify_installed(&root, &c)?;
-            Ok(Installed { root, component: c })
-        };
+        let selected = |role| self.selected_component(selection, role);
 
         let worker = selected(WORKER)?;
         let probe = selected(PROBE)?;
@@ -293,8 +321,26 @@ impl ResourceManager {
             context.cuda_root = Some(cuda.root.clone());
             context.components.push(cuda.runtime());
         }
-        Ok(InstalledWorker { binary, context })
+        Ok(InstalledWorker {
+            binary,
+            prelude: WorkerPrelude::Job(WorkerBootstrap {
+                protocol_version: PROTOCOL_VERSION,
+                context,
+            }),
+        })
     }
+}
+
+pub(super) fn validate_host_target(target: &TargetPlatform) -> Result<()> {
+    catalog::validate_target(target)?;
+    if target.os != std::env::consts::OS || target.architecture != std::env::consts::ARCH {
+        return Err(AppError::new(
+            ErrorCode::UnsupportedBackend,
+            "resources",
+            "Cannot launch a worker for another platform",
+        ));
+    }
+    Ok(())
 }
 
 fn nested_manifest(kind: &str) -> PathBuf {

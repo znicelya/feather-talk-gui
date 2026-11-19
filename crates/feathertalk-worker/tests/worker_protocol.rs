@@ -71,11 +71,7 @@ impl Process {
     }
     fn with_output(change: impl FnOnce(&mut WorkerContext), drain: bool) -> Self {
         use sha2::{Digest, Sha256};
-        use std::{
-            fs,
-            io::BufReader,
-            process::{Command, Stdio},
-        };
+        use std::fs;
         let root = tempfile::tempdir().unwrap();
         let directory = root.path().canonicalize().unwrap();
         // A real source-hash stage provides a bounded window to exercise concurrent control.
@@ -139,6 +135,27 @@ impl Process {
             cuda_root: None,
         };
         change(&mut context);
+        Self::spawn(
+            root,
+            project,
+            WorkerPrelude::Job(WorkerBootstrap {
+                protocol_version: PROTOCOL_VERSION,
+                context,
+            }),
+            drain,
+        )
+    }
+
+    fn spawn(
+        root: tempfile::TempDir,
+        project: ProjectId,
+        prelude: WorkerPrelude,
+        drain: bool,
+    ) -> Self {
+        use std::{
+            io::BufReader,
+            process::{Command, Stdio},
+        };
         let mut child = Command::new(env!("CARGO_BIN_EXE_feathertalk-worker"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -170,10 +187,7 @@ impl Process {
             project,
             _paused_output: paused,
         };
-        p.write(&WorkerBootstrap {
-            protocol_version: PROTOCOL_VERSION,
-            context,
-        });
+        p.write(&prelude);
         p
     }
     fn write(&mut self, value: &impl Serialize) {
@@ -202,6 +216,74 @@ impl Process {
         })
     }
 }
+
+#[test]
+fn discovery_without_project_reports_devices_but_rejects_start() {
+    use sha2::{Digest, Sha256};
+    use std::{fs, path::Path};
+
+    let scratch = tempfile::tempdir().unwrap();
+    let worker = Path::new(env!("CARGO_BIN_EXE_feathertalk-worker"))
+        .canonicalize()
+        .unwrap();
+    let mut file = fs::File::open(&worker).unwrap();
+    let mut hash = Sha256::new();
+    std::io::copy(&mut file, &mut hash).unwrap();
+    let target = TargetPlatform {
+        os: std::env::consts::OS.into(),
+        architecture: std::env::consts::ARCH.into(),
+        backend: "cpu".into(),
+    };
+    let discovery = WorkerPrelude::Discovery(WorkerDiscovery {
+        protocol_version: PROTOCOL_VERSION,
+        target: target.clone(),
+        cuda_root: None,
+        components: vec![RuntimeComponent {
+            target: Some(target),
+            pin: ResourcePin {
+                id: "worker".into(),
+                version: "fixture".into(),
+            },
+            root: worker.parent().unwrap().into(),
+            files: vec![RuntimeFile {
+                path: worker,
+                sha256: format!("{:x}", hash.finalize()),
+            }],
+        }],
+    });
+    let mut process = Process::spawn(scratch, ProjectId::new(), discovery, true);
+    process.write(&WorkerRequest::Hello {
+        protocol_version: PROTOCOL_VERSION,
+    });
+    let ready = process.next();
+    assert_eq!(ready.task_id, None);
+    let EventPayload::Ready {
+        capabilities,
+        devices,
+    } = ready.payload
+    else {
+        panic!("Expected discovery Ready: {ready:?}")
+    };
+    assert!(!capabilities.training && !capabilities.generation);
+    assert!(
+        devices
+            .iter()
+            .any(|device| device.backend == BackendKind::Flex)
+    );
+
+    let task = TaskId::new();
+    process.write(&WorkerRequest::Start {
+        task_id: task,
+        job: process.train(),
+    });
+    let event = process.next();
+    assert_eq!(event.task_id, None);
+    assert!(matches!(event.payload, EventPayload::RequestRejected {
+        request: RequestKind::Start, requested_task_id: Some(id), error,
+    } if id == task && error.code == ErrorCode::Protocol));
+    process.write(&WorkerRequest::Shutdown);
+}
+
 #[test]
 fn raw_hello_start_cancel_roundtrip() {
     let mut p = Process::new();
