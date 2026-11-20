@@ -3,6 +3,9 @@ name: Desktop component builds
 on:
   workflow_dispatch:
     inputs:
+      bundle-inputs-run:
+        description: Run ID with prepared bundle-inputs artifacts for each target (leave blank for component builds only)
+        type: string
       gpu-components:
         description: Also compile GPU workers (does not run hardware acceptance)
         type: boolean
@@ -13,6 +16,10 @@ permissions:
 
 jobs:
   bundle:
+    if: inputs['bundle-inputs-run'] != ''
+    permissions:
+      actions: read
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -41,16 +48,24 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libfuse2t64
       - run: rustup toolchain install 1.100.0 --profile minimal --target ${{ matrix.target }}
       - run: pnpm install --frozen-lockfile
-      - name: Build CPU component and bundle
+      - uses: actions/download-artifact@v4
+        with:
+          name: bundle-inputs-${{ matrix.target }}
+          run-id: ${{ inputs['bundle-inputs-run'] }}
+          github-token: ${{ github.token }}
+          path: .artifacts/bundle-inputs
+      - name: Restore Unix media executable bits
+        if: runner.os != 'Windows'
         shell: bash
+        run: chmod +x -- ".artifacts/bundle-inputs/$FT_BUILD_TARGET/media/bin/ffmpeg" ".artifacts/bundle-inputs/$FT_BUILD_TARGET/media/bin/ffprobe"
+      - name: Build desktop app and native resources
+        shell: bash
+        env:
+          FT_BUNDLE_STAGE_DIR: .artifacts/ci/catalog
         run: |
           set -euo pipefail
           mkdir -p .artifacts/ci/reports
-          {
-            node tools/package/build-runtime.mjs --target "$FT_BUILD_TARGET" --backend cpu --output .artifacts/ci/staged
-            node tools/package/build-catalog.mjs --artifacts .artifacts/ci/staged --output .artifacts/ci/catalog/catalog.json --bundle-target "$FT_BUILD_TARGET"
-            pnpm tauri build --ci --no-sign --target "$FT_BUILD_TARGET" --config "$PWD/.artifacts/ci/catalog/tauri-overlay.json" -- --locked
-          } 2>&1 | tee .artifacts/ci/reports/build.log
+          pnpm tauri build --ci --no-sign --target "$FT_BUILD_TARGET" 2>&1 | tee .artifacts/ci/reports/build.log
           python -B tools/acceptance/build_report.py --target "$FT_BUILD_TARGET" --bundles "target/$FT_BUILD_TARGET/release/bundle" --log .artifacts/ci/reports/build.log
           tar -C "target/$FT_BUILD_TARGET/release" -czf .artifacts/ci/desktop-bundles.tar.gz bundle
       - uses: actions/upload-artifact@v4
@@ -63,28 +78,42 @@ jobs:
             .artifacts/ci/catalog/catalog.json
             .artifacts/ci/reports/
 
-  gpu-components:
-    if: inputs['gpu-components']
+  components:
+    if: inputs['bundle-inputs-run'] == '' || inputs['gpu-components']
     strategy:
       fail-fast: false
       matrix:
         include:
+          - { runner: windows-2025, target: x86_64-pc-windows-msvc, backend: cpu }
+          - { runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, backend: cpu }
+          - { runner: macos-15, target: aarch64-apple-darwin, backend: cpu }
+          - { runner: macos-15-intel, target: x86_64-apple-darwin, backend: cpu }
           - { runner: windows-2025, target: x86_64-pc-windows-msvc, backend: cuda }
           - { runner: windows-2025, target: x86_64-pc-windows-msvc, backend: vulkan }
           - { runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, backend: cuda }
           - { runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, backend: vulkan }
           - { runner: macos-15, target: aarch64-apple-darwin, backend: metal }
     runs-on: ${{ matrix.runner }}
+    # Compiling components does not require the model/media inputs or physical GPUs.
     env:
       RUSTUP_TOOLCHAIN: '1.100.0'
       CUDARC_CUDA_VERSION: '12060'
     steps:
+      - name: Select backend
+        id: backend
+        if: matrix.backend == 'cpu' || inputs['gpu-components']
+        shell: bash
+        run: echo 'enabled=true' >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
+        if: steps.backend.outputs.enabled == 'true'
       - uses: actions/setup-node@v4
+        if: steps.backend.outputs.enabled == 'true'
         with:
           node-version: 24
       - run: rustup toolchain install 1.100.0 --profile minimal --target ${{ matrix.target }}
+        if: steps.backend.outputs.enabled == 'true'
       - name: Build and archive runtime pair
+        if: steps.backend.outputs.enabled == 'true'
         shell: bash
         env:
           FT_BUILD_TARGET: ${{ matrix.target }}
@@ -94,6 +123,7 @@ jobs:
           node tools/package/build-runtime.mjs --target "$FT_BUILD_TARGET" --backend "$FT_BUILD_BACKEND" --output .artifacts/ci/staged
           tar -C .artifacts/ci/staged -czf .artifacts/ci/runtime-pair.tar.gz "$FT_BUILD_TARGET/$FT_BUILD_BACKEND"
       - uses: actions/upload-artifact@v4
+        if: steps.backend.outputs.enabled == 'true'
         with:
           name: component-${{ matrix.target }}-${{ matrix.backend }}
           include-hidden-files: true

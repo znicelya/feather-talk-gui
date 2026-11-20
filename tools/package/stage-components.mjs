@@ -25,17 +25,20 @@ export function inspectExecutable(path, target) {
     assert.equal(readSync(file, header, 0, header.length, 0), header.length, `Short executable: ${path}`);
     if (target.os === "windows") {
       assert.equal(header.toString("ascii", 0, 2), "MZ", path);
-      const signature = Buffer.alloc(6);
-      assert.equal(readSync(file, signature, 0, 6, header.readUInt32LE(60)), 6, path);
+      const signature = Buffer.alloc(26);
+      assert.equal(readSync(file, signature, 0, signature.length, header.readUInt32LE(60)), signature.length, path);
       assert.equal(signature.readUInt32LE(0), 0x4550, path);
       assert.equal(signature.readUInt16LE(4), 0x8664, `Expected x64 PE: ${path}`);
+      assert.equal(signature.readUInt16LE(24), 0x20b, `Expected PE32+ executable: ${path}`);
     } else if (target.os === "linux") {
       assert.equal(header.readUInt32BE(0), 0x7f454c46, path);
       assert.deepEqual([...header.subarray(4, 6)], [2, 1], path);
       assert.equal(header.readUInt16LE(18), 62, `Expected x64 ELF: ${path}`);
+      assert.ok([2, 3].includes(header.readUInt16LE(16)), `Expected ELF executable: ${path}`);
     } else {
       assert.equal(header.readUInt32LE(0), 0xfeedfacf, `Expected thin 64-bit Mach-O: ${path}`);
       assert.equal(header.readUInt32LE(4), target.architecture === "aarch64" ? 0x0100000c : 0x01000007, path);
+      assert.equal(header.readUInt32LE(12), 2, `Expected Mach-O executable: ${path}`);
     }
   } finally { closeSync(file); }
 }

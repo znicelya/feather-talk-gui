@@ -17,6 +17,7 @@ if (signing && (platform.os !== "macos" || process.platform !== "darwin" || valu
 }
 const env = { ...process.env };
 if (platform.os === "macos") env.MACOSX_DEPLOYMENT_TARGET = platform.minimum_version;
+if (backend === "cuda") env.CUDARC_CUDA_VERSION ??= "12060";
 const invoke = (program, args, stdio = "pipe") => {
   const result = spawnSync(program, args, { cwd: repo, encoding: "utf8", stdio, windowsHide: true, env });
   if (result.error) throw result.error;
@@ -45,6 +46,7 @@ writeFileSync(join(input, "BUILD.json"), JSON.stringify({
   profile, backend, target, exit: 0, base_revision: invoke("git", ["rev-parse", "HEAD"]),
   source_dirty: !!invoke("git", ["status", "--porcelain", "--untracked-files=normal"]),
   rustc: invoke("rustc", ["-vV"]), cargo_args: args,
+  ...(backend === "cuda" ? { cuda_version: env.CUDARC_CUDA_VERSION } : {}),
   macos_deployment_target: platform.os === "macos" ? env.MACOSX_DEPLOYMENT_TARGET : null,
   signed_before_packaging: !!signing,
 }, null, 2));

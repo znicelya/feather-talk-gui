@@ -9,16 +9,14 @@ import shutil
 from package_local import digest
 
 
-TARGETS = {
-    "x86_64-pc-windows-msvc": ("windows", "x86_64", {"cpu", "cuda", "vulkan"}),
-    "x86_64-unknown-linux-gnu": ("linux", "x86_64", {"cpu", "cuda", "vulkan"}),
-    "x86_64-apple-darwin": ("macos", "x86_64", {"cpu"}),
-    "aarch64-apple-darwin": ("macos", "aarch64", {"cpu", "metal"}),
-}
-
-
 def load(path):
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(path.read_text(encoding="utf-8-sig"))
+
+
+TARGETS = {
+    target["triple"]: (target["os"], target["architecture"], set(target["backends"]))
+    for target in load(Path(__file__).resolve().parents[2] / "resources/targets.json")["targets"]
+}
 
 
 def encode(obj):
@@ -105,6 +103,7 @@ def main():
     imports = {}
     supplied = load(args.base_imports)
     for path in map(Path, supplied.values() if isinstance(supplied, dict) else supplied):
+        path = args.base_imports.parent / path
         component = by_manifest.get(digest(path))
         if component is None:
             raise ValueError(f"Base manifest does not match the catalog: {path}")

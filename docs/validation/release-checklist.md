@@ -33,10 +33,10 @@ CPU 使用 `cpu 'Host CPU'`，CUDA 示例为 `cuda 'RTX 2060'`，Linux 的 AMD �
 
 ## 使用安装包验证
 
-- 新用户数据目录安装对应目标的包，记录安装包 SHA-256、实际系统版本、签名、驱动、组件版本与模型清单。验证随包 CPU worker/probe 正常导入并可探测；再用准备动作下载目标训练/推理资源。核对实际 URL、分发依据、下载哈希和大小。Windows 准备 WebView2；Linux 验证 WebKitGTK/GStreamer 能解码 H.264/AAC。
+- 按 [资源说明](../../resources/README.md#build-an-installer-or-run-the-desktop-in-development) 构建对应目标的包，并用新用户数据目录安装。记录安装包 SHA-256、实际系统版本、签名、驱动、组件版本与模型清单。确认本机所有后端的随包资源通过校验、实际设备可被探测，无需下载或手动导入。单独验证有下载地址的更新资源。Windows 准备 WebView2 和 Visual C++ x64 运行库；Linux 验证 WebKitGTK/GStreamer 能解码 H.264/AAC。
 - 在专用验收环境断开网络并重新打开应用。用一段视频创建人物，从头一键训练，检查实时曲线，取消保存；重开恢复历史，从检查点续训，然后选驱动音频导出并播放。确认实际 GPU 或 CPU、画面和音轨。用中文/空格输入输出路径；验证损坏资源、OOM、驱动和编码失败的提示，编码失败保留已有成品。
 - 用同一人物视频和驱动音频生成 Python 参考成品，记录素材、参考和实际输出的哈希。对照同一规范化输入检查口型、画质、回贴边界及帧间稳定性。
-- macOS 在哈希发布前给 worker、probe 和其他可执行组件签名；随后签主应用和安装包、公证并 stapling。CPU 二进制随包放在 `Contents/Resources/bootstrap`。先用 `build-runtime.mjs --signing-identity <Developer ID Application>` 对实际字节签名，再生成清单。验证 `codesign --verify --deep --strict`、Gatekeeper、公证票据、下载后的执行权限和实际启动。
+- macOS 在清单生成前给 worker、probe 和媒体工具签名；随后签主应用和安装包、公证并 stapling。组件随包放在 `Contents/Resources/bootstrap`。在构建机设置 `FT_COMPONENT_SIGNING_IDENTITY`，并提供已签名的媒体工具。验证 `codesign --verify --deep --strict`、Gatekeeper、公证票据、缓存中的执行权限和实际启动。
 
 ## 汇总证据
 

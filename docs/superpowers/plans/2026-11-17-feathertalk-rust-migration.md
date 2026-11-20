@@ -283,9 +283,9 @@ Rust 中标注为 `Result<T>` 的自有接口均使用 core 的 `type Result<T> 
 **Interfaces:** `stage-components.mjs --target <triple> --backend <backend> --input <dir> --output <dir>`；`build-catalog.mjs --artifacts <dir> --output <json>`；`check_reports.py --matrix resources/targets.json --reports <dir> --require-complete`；内部 `validate_reports(matrix: dict, reports: list[dict], require_complete: bool) -> ValidationResult`，结果含 passed/missing/failures。每份报告含 OS/架构/显卡/驱动/实际后端、组件和模型身份、训练/恢复/生成/离线结果与日志路径。非完整模式允许报告环境尚未取得，完整发布检查必须拒绝缺失的必需项；platform-matrix.md 展示 JSON 目标与实际报告结果。
 
 - [x] **Step 1:** 报告检查器针对仅编译、Intel Mac 错标 GPU、CPU 冒充 AMD、缺离线验收、错误 worker target、缺均值脸及无效资源地址均有测试。已记录缺失模块时的失败与实现后的通过结果；`--require-complete` 会拒绝缺失的发布验收。
-- [x] **Step 2:** 已实现 target 清单、组件暂存与 catalog 构建，配置 Windows NSIS、Linux deb/AppImage、macOS arm64/x86_64 app/dmg。CPU worker/probe 由 Tauri 资源目录随包导入，FFmpeg、GPU worker 和模型使用同一校验缓存；运行路径来自安装目录和缓存。CI 配置仅构建、测试、暂存，实际平台构建进度见 Step 3。
+- [x] **Step 2:** 已实现 target 清单、组件暂存与 catalog 构建，配置 Windows NSIS、Linux deb/AppImage、macOS arm64/x86_64 app/dmg。随包交付的后续修复见 Task 18b；运行路径来自安装目录和校验缓存。实际平台构建进度见 Step 3。
 - [ ] **Step 3:** 运行 `cargo fmt --all --check`、各已启用 feature 的针对性 Rust 集成测试、`pnpm test -- --run`、`pnpm build`、`pnpm tauri build`，预期目标平台构建和所需验证通过；CPU 检查在 CI 可执行，GPU 任务使用能实测对应硬件的环境。macOS 分发同时验证组件签名/公证、可执行权限及下载后实际启动；记录最低系统版本、编解码构建信息/notices。
-- [ ] **Step 4:** 在 Win11/RTX 2060、Win11/B580 及 CPU 先跑验收脚本，再补齐 Linux/NVIDIA/AMD/Arc、M 系列 Mac、Intel Mac CPU 的必需路径。用固定人物/音频比较当前 Python 效果；执行干净资源目录首启→下载→断网→一键训练→曲线→取消保存→重开续训→生成播放，另测损坏资源、OOM/驱动失败、中文路径和编码中断。生产 catalog 需要真实可访问地址、有效哈希和可分发来源；没有素材/设备/地址的项保持未通过，不把它们计作任务全部完成。
+- [ ] **Step 4:** 在 Win11/RTX 2060、Win11/B580 及 CPU 先跑验收脚本，再补齐 Linux/NVIDIA/AMD/Arc、M 系列 Mac、Intel Mac CPU 的必需路径。用固定人物/音频比较当前 Python 效果；执行断网下的空缓存首启→一键训练→曲线→取消保存→重开续训→生成播放，另测损坏资源、OOM/驱动失败、中文路径和编码中断。随包输入仍需可分发来源；如配置下载更新，还需真实可访问地址和有效哈希。未覆盖的素材/设备/环境保持未通过。
 - [ ] **Step 5:** `python tools/acceptance/check_reports.py --matrix resources/targets.json --reports .artifacts/reports --require-complete` 预期全部必需行 PASS；README 写清首启/离线/硬件与资源要求、基准和已验证范围。提交 `build: package and validate supported desktop hardware paths`；待验证的环境或发布依赖必须在交付记录保留为未完成。
 
 执行记录：Windows 10 x64 上用最终 Tauri overlay 构建新版 NSIS，并验证独立目录安装、空缓存首启、随包 CPU worker/probe 的复制及退出。CPU 和 RTX 2060 Vulkan 在 release worker 上从 step 1 续训到 step 2，导出 640×600、29 帧、25 FPS 的 H.264/AAC。完整发布门禁退出 1，确认的发布项仅为 Windows x64 构建；其余平台构建与完整发布验收见 [平台矩阵](../../validation/platform-matrix.md)。
@@ -297,6 +297,10 @@ Rust 中标注为 `Result<T>` 的自有接口均使用 core 的 `type Result<T> 
 - [x] **打包契约：** `tools/acceptance/stage_smoke_kit.py --packages <dir> --runner <exe> --output <new-dir>` 复制并校验 Windows x64 CPU/Vulkan 默认资源、原 catalog、验收程序和 `run.ps1`。相对地址搬移、缺失组件和同大小内容损坏三项测试通过。
 - [x] **运行契约：** `run.ps1 -Runner <exe>` 直接运行 `hardware_acceptance`；省略时沿用 Cargo，测试兼容新相对地址和已有绝对地址。搬移后用无开发工具的 PATH 在 RTX 2060 复跑成功，记录位于 `.artifacts/task18/relocated kit/result/`。
 - [x] **交付：** 已保留 `.artifacts/task18/arc-b580-local-kit.zip`、SHA-256 和 [复跑命令](../../validation/release-checklist.md)。B580 验收仍待 Win11 实机执行。
+
+#### Task 18b: 安装包随平台提供训练与生成资源
+
+合并后的 `main` 只会导入随包 CPU worker/probe，默认构建还会跳过 bundle。新构建入口先按 target 组装公共模型、FFmpeg/FFprobe、所有目标后端的 worker/probe 和适用的 CUDA libdevice，再调用 Tauri。缺件或验证失败时中止；首次启动将资源导入同一校验缓存。Windows 10 上已验证 NSIS 空缓存首启，以及 CPU、RTX 2060 CUDA/Vulkan 用安装目录中的资源从头训练、续训和导出。其他平台的整机验收仍待完成。详见 [执行与验收记录](2026-11-19-bundled-runtime-assets.md)。
 
 ## 外部依赖与执行边界
 
