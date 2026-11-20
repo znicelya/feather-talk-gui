@@ -38,7 +38,7 @@ pub fn probe_batch_size(
 
 pub(super) fn probe_batch_size_validated(
     state: &TrainingState,
-    data: &TrainingData<'_>,
+    data: &TrainingData,
     device: &ExecutionDevice,
     context: &ProbeContext<'_>,
 ) -> Result<ProbeSelection> {

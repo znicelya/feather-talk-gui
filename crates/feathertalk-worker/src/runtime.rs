@@ -7,7 +7,7 @@ use feathertalk_engine::{
     media::MediaTools,
     training::{
         batch_probe::TrainingRuntime,
-        lifecycle::{StoppingReason, train},
+        lifecycle::{StoppingReason, TrainingProject, train_project},
     },
 };
 use std::{fs, thread::JoinHandle};
@@ -248,7 +248,7 @@ fn execute(
         JobSpec::Train(r) => r.resume.as_ref(),
         JobSpec::Generate(r) => Some(&r.model_ref),
     };
-    let prepared = if let Some(reference) = reference {
+    let checkpoint_metadata = if let Some(reference) = reference {
         let metadata =
             engine::training::checkpoint::read_committed_metadata(&binding.directory, reference)?;
         for identity in metadata
@@ -270,29 +270,19 @@ fn execute(
                 ));
             }
         }
-        engine::data::prepared::reopen_generation(
-            &binding.directory,
-            &project,
-            &metadata.preprocessing.cache_directory,
-            &metadata.prepared_manifest_sha256,
-        )?
+        Some(metadata)
     } else {
-        engine::data::prepare_project(
-            &binding.directory,
-            &project,
-            &c.assets,
-            &tools,
-            &device,
-            observer,
-            cancel,
-        )?
+        None
     };
     match job {
         JobSpec::Train(request) => {
-            let result = train(
+            let result = train_project(
                 request,
-                &prepared,
-                &c.assets.join("vgg19"),
+                &TrainingProject {
+                    directory: &binding.directory,
+                    assets: &c.assets,
+                    tools: &tools,
+                },
                 &device,
                 &TrainingRuntime {
                     probe_runner: c.probe_runner.clone(),
@@ -309,12 +299,21 @@ fn execute(
                 },
             })
         }
-        JobSpec::Generate(request) => engine::inference::generate(
-            request, &prepared, &c.assets, &tools, &device, observer, cancel,
-        )
-        .map(|r| EventPayload::Completed {
-            result: ArtifactResult::Video(r),
-        }),
+        JobSpec::Generate(request) => {
+            let metadata = checkpoint_metadata.expect("Generation always selects a checkpoint");
+            let prepared = engine::data::prepared::reopen_generation(
+                &binding.directory,
+                &project,
+                &metadata.preprocessing.cache_directory,
+                &metadata.prepared_manifest_sha256,
+            )?;
+            engine::inference::generate(
+                request, &prepared, &c.assets, &tools, &device, observer, cancel,
+            )
+            .map(|r| EventPayload::Completed {
+                result: ArtifactResult::Video(r),
+            })
+        }
     }
 }
 

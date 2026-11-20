@@ -1,11 +1,16 @@
 //! Public run orchestration. Worker owns terminal events.
 use super::{
     batch_probe::{ProbeContext, TrainingRuntime, probe_batch_size_validated},
-    checkpoint::{load_checkpoint_with_data, save_checkpoint},
+    checkpoint::{load_checkpoint_with_data, read_project, save_training_checkpoint},
     metrics::SampledMetrics,
     state::{TrainingData, TrainingState, invalid},
 };
-use crate::{ExecutionDevice, data::prepared::PreparedProject, models::vgg::VggFeatures};
+use crate::{
+    ExecutionDevice,
+    data::prepared::{PreparedProject, prepare_project},
+    media::MediaTools,
+    models::vgg::VggFeatures,
+};
 use feathertalk_core::*;
 use serde::{Deserialize, Serialize};
 use std::{fs, io::ErrorKind, path::Path, time::Instant};
@@ -24,7 +29,11 @@ pub struct TrainingResult {
     pub global_step: u64,
     pub stopping_reason: StoppingReason,
 }
-fn publish(state: &TrainingState, observer: &dyn TaskObserver) -> Result<ModelRef> {
+fn publish(
+    state: &TrainingState,
+    data: &TrainingData,
+    observer: &dyn TaskObserver,
+) -> Result<ModelRef> {
     let root = state.project_directory();
     let checkpoints = root.join("checkpoints");
     match fs::create_dir(&checkpoints) {
@@ -36,8 +45,9 @@ fn publish(state: &TrainingState, observer: &dyn TaskObserver) -> Result<ModelRe
     if !checkpoints.starts_with(root) || !checkpoints.is_dir() {
         return Err(invalid("Checkpoint directory must be inside the project"));
     }
-    let reference = save_checkpoint(
+    let reference = save_training_checkpoint(
         state,
+        data,
         &checkpoints.join(format!("generation-{}", TrainingRunId::new())),
     )?;
     observer
@@ -147,12 +157,13 @@ mod tests {
             device: DevicePolicy::Auto,
             resume: None,
         };
-        let mut state = TrainingState::fresh(&request, &prepared, &device).unwrap();
+        let (mut state, data) =
+            TrainingState::fresh_with_data(&request, &prepared, &device).unwrap();
         // State protocol fixture only, not full-objective execution evidence.
         super::super::checkpoint_tests::update(&mut state);
         let before = state.optimizer_bytes().unwrap();
         let run = state.metadata.run_id;
-        let reference = publish(&state, &Observe).unwrap();
+        let reference = publish(&state, &data, &Observe).unwrap();
         request.resume = Some(reference);
         for field in ["seed", "loss", "beta1", "beta2", "epsilon", "weight_decay"] {
             let mut invalid = request.clone();
@@ -241,18 +252,11 @@ pub fn train(
     observer: &dyn TaskObserver,
     cancel: &Cancellation,
 ) -> Result<TrainingResult> {
-    super::state::validate_adam_config(&request.config)?;
+    validate_request(request, device)?;
     if request.project_id != prepared.project_id {
         return Err(invalid("Request project differs from prepared data"));
     }
-    if let DevicePolicy::Explicit(d) = &request.device {
-        if d.device_id != device.descriptor.id || d.backend != device.descriptor.backend {
-            return Err(invalid(
-                "Request device differs from selected execution device",
-            ));
-        }
-    }
-    let (mut state, data) = match &request.resume {
+    let (state, data) = match &request.resume {
         Some(reference) => {
             let (state, pinned) =
                 load_checkpoint_with_data(&prepared.project_directory, reference, device)?;
@@ -261,6 +265,97 @@ pub fn train(
         }
         None => TrainingState::fresh_with_data(request, prepared, device)?,
     };
+    run(
+        request,
+        (state, data),
+        vgg_assets,
+        device,
+        runtime,
+        observer,
+        cancel,
+    )
+}
+
+pub struct TrainingProject<'a> {
+    pub directory: &'a Path,
+    pub assets: &'a Path,
+    pub tools: &'a MediaTools,
+}
+
+/// Open a project for training. Preparation and checkpoint load already verify
+/// the selected generation, so the run can use that data directly.
+pub fn train_project(
+    request: &TrainRequest,
+    project: &TrainingProject<'_>,
+    device: &ExecutionDevice,
+    runtime: &TrainingRuntime,
+    observer: &dyn TaskObserver,
+    cancel: &Cancellation,
+) -> Result<TrainingResult> {
+    validate_request(request, device)?;
+    let bound = match &request.resume {
+        Some(reference) => {
+            let (state, pinned) = load_checkpoint_with_data(project.directory, reference, device)?;
+            let data = TrainingData::from_verified(&state, pinned)?;
+            (state, data)
+        }
+        None => {
+            let root = fs::canonicalize(project.directory).map_err(invalid)?;
+            let manifest = read_project(&root)?;
+            if manifest.id != request.project_id {
+                return Err(invalid("Request belongs to a different project"));
+            }
+            let prepared = prepare_project(
+                &root,
+                &manifest,
+                project.assets,
+                project.tools,
+                device,
+                observer,
+                cancel,
+            )?;
+            TrainingState::fresh_verified(request, prepared, &manifest, device)?
+        }
+    };
+    run(
+        request,
+        bound,
+        &project.assets.join("vgg19"),
+        device,
+        runtime,
+        observer,
+        cancel,
+    )
+}
+
+fn validate_request(request: &TrainRequest, device: &ExecutionDevice) -> Result<()> {
+    super::state::validate_adam_config(&request.config)?;
+    if let DevicePolicy::Explicit(d) = &request.device {
+        if d.device_id != device.descriptor.id || d.backend != device.descriptor.backend {
+            return Err(invalid(
+                "Request device differs from selected execution device",
+            ));
+        }
+    }
+    if request
+        .resume
+        .as_ref()
+        .is_some_and(|model| model.project_id != request.project_id)
+    {
+        return Err(invalid("Checkpoint belongs to a different project"));
+    }
+    Ok(())
+}
+
+fn run(
+    request: &TrainRequest,
+    (mut state, data): (TrainingState, TrainingData),
+    vgg_assets: &Path,
+    device: &ExecutionDevice,
+    runtime: &TrainingRuntime,
+    observer: &dyn TaskObserver,
+    cancel: &Cancellation,
+) -> Result<TrainingResult> {
     let vgg = VggFeatures::load(vgg_assets, &device.device.clone().autodiff())?;
     if state
         .metadata
@@ -300,7 +395,7 @@ pub fn train(
     // Schema2 permits a selected pristine dependency. Child must use this exact package.
     state.metadata.vgg_identity = Some(vgg.identity().clone());
     if cancel.is_cancelled() {
-        let reference = publish(&state, observer)?;
+        let reference = publish(&state, &data, observer)?;
         return Ok(result(&state, reference, StoppingReason::Cancelled));
     }
     if !cancel.is_cancelled() {
@@ -326,7 +421,7 @@ pub fn train(
                 })?;
             }
             Err(e) if e.code == ErrorCode::Cancelled => {
-                let reference = publish(&state, observer)?;
+                let reference = publish(&state, &data, observer)?;
                 return Ok(result(&state, reference, StoppingReason::Cancelled));
             }
             Err(e) => return Err(e),
@@ -369,7 +464,7 @@ pub fn train(
             Ok(None) => {}
             Err(mut e) => {
                 drop(history); // Never reuse a writer after an append/sync failure.
-                match publish(&state, observer) {
+                match publish(&state, &data, observer) {
                     Ok(reference) => e
                         .evidence
                         .push(format!("Committed state saved as {reference:?}")),
@@ -383,7 +478,10 @@ pub fn train(
         if state.metadata.epoch != before_epoch
             && state.metadata.epoch % request.config.save_every == 0
         {
-            last_saved = Some((state.metadata.global_step, publish(&state, observer)?));
+            last_saved = Some((
+                state.metadata.global_step,
+                publish(&state, &data, observer)?,
+            ));
         }
         if step.cancelled {
             break;
@@ -391,7 +489,7 @@ pub fn train(
     }
     let reference = match last_saved {
         Some((step, reference)) if step == state.metadata.global_step => reference,
-        _ => publish(&state, observer)?,
+        _ => publish(&state, &data, observer)?,
     };
     let reason = if state.metadata.epoch >= request.config.epochs {
         StoppingReason::Completed

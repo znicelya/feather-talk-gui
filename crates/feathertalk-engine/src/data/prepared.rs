@@ -61,13 +61,13 @@ fn preparation_fingerprint(
         .map_err(invalid)?,
     ))
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrameRecord {
     pub file: PathBuf,
     pub sha256: String,
     pub landmarks: Vec<[i32; 2]>,
 }
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct PreparedProject {
     pub project_directory: PathBuf,
     pub project_id: ProjectId,
@@ -81,6 +81,7 @@ pub struct PreparedProject {
     pub frames: Vec<FrameRecord>,
     pub features: Arc<Vec<f32>>,
     pub(crate) generation: PathBuf,
+    pub(crate) manifest_sha256: String,
 }
 impl PreparedProject {
     pub fn validate(&self) -> Result<()> {
@@ -94,20 +95,30 @@ impl PreparedProject {
         Ok(())
     }
     pub fn read_frame(&self, index: usize) -> Result<PreparedFrame> {
+        self.read_frame_impl(index, true)
+    }
+    /// Only for a training session that verified the generation at startup.
+    pub(super) fn read_verified_frame(&self, index: usize) -> Result<PreparedFrame> {
+        self.read_frame_impl(index, false)
+    }
+    fn read_frame_impl(&self, index: usize, check_hash: bool) -> Result<PreparedFrame> {
         let record = self
             .frames
             .get(index)
             .ok_or_else(|| invalid("Frame index out of bounds"))?;
         safe_relative(&record.file)?;
-        let path = self.generation.join(&record.file);
-        if !fs::canonicalize(&path)
-            .map_err(invalid)?
-            .starts_with(&self.project_directory)
-        {
+        let path = fs::canonicalize(self.generation.join(&record.file)).map_err(invalid)?;
+        if !path.starts_with(&self.project_directory) {
             return Err(invalid("Frame path escapes project root"));
         }
-        let bytes = fs::read(path).map_err(invalid)?;
-        if digest(&bytes) != record.sha256 || bytes.len() != 4 * 4 * 144 * 144 {
+        const FRAME_BYTES: usize = 4 * 4 * 144 * 144;
+        let mut bytes = Vec::with_capacity(FRAME_BYTES + 1);
+        fs::File::open(path)
+            .map_err(invalid)?
+            .take((FRAME_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(invalid)?;
+        if bytes.len() != FRAME_BYTES || (check_hash && digest(&bytes) != record.sha256) {
             return Err(AppError::new(
                 ErrorCode::ResourceCorrupt,
                 "prepared-frame",
@@ -394,33 +405,67 @@ fn owned_directory(root: &Path, path: &Path) -> Result<PathBuf> {
     }
     Ok(current)
 }
-fn candidate(root: &Path, index: &Index, project: &ProjectManifest) -> Result<Candidate> {
-    safe_relative(&index.generation)?;
-    let directory = root.join(&index.generation);
-    if !fs::canonicalize(&directory)
-        .map_err(invalid)?
-        .starts_with(root)
-    {
+fn read_generation(
+    root: &Path,
+    relative: &Path,
+    manifest_sha256: &str,
+    project: &ProjectManifest,
+) -> Result<Candidate> {
+    safe_relative(relative)?;
+    let directory = root.join(relative);
+    let canonical_directory = fs::canonicalize(&directory).map_err(invalid)?;
+    if !canonical_directory.starts_with(root) {
         return Err(invalid("Cache generation escapes project root"));
     }
-    let bytes = fs::read(directory.join("manifest.json")).map_err(invalid)?;
-    if digest(&bytes) != index.manifest_sha256 {
+    let manifest = fs::canonicalize(canonical_directory.join("manifest.json")).map_err(invalid)?;
+    if !manifest.starts_with(root) {
+        return Err(invalid("Prepared manifest escapes project"));
+    }
+    let bytes = fs::read(manifest).map_err(invalid)?;
+    if digest(&bytes) != manifest_sha256 {
         return Err(invalid("Cache manifest corrupted"));
     }
     let m: Generation = serde_json::from_slice(&bytes).map_err(invalid)?;
-    if m.project_id != project.id || m.input_identity != index.input_identity {
+    if m.project_id != project.id {
         return Err(invalid("Prepared project identity mismatch"));
+    }
+    if m.preprocessing.source_sha256 != project.source_video.sha256
+        || m.preprocessing.cache_directory != relative
+        || project
+            .preprocessing
+            .as_ref()
+            .is_some_and(|p| p != &m.preprocessing)
+    {
+        return Err(invalid("Pinned preprocessing does not match project"));
     }
     Ok(Candidate {
         directory,
         generation: m,
     })
 }
+fn candidate(root: &Path, index: &Index, project: &ProjectManifest) -> Result<Candidate> {
+    let result = read_generation(root, &index.generation, &index.manifest_sha256, project)?;
+    if result.generation.input_identity != index.input_identity {
+        return Err(invalid("Prepared project identity mismatch"));
+    }
+    Ok(result)
+}
 fn load(root: &Path, index: &Index, project: &ProjectManifest) -> Result<PreparedProject> {
+    load_artifacts(
+        root,
+        candidate(root, index, project)?,
+        &index.manifest_sha256,
+    )
+}
+fn load_artifacts(
+    root: &Path,
+    candidate: Candidate,
+    manifest_sha256: &str,
+) -> Result<PreparedProject> {
     let Candidate {
         directory,
         generation: m,
-    } = candidate(root, index, project)?;
+    } = candidate;
     for name in ["video.mkv", "audio.wav", "features.f32"] {
         if !m.files.contains_key(Path::new(name)) {
             return Err(invalid("Incomplete cache file index"));
@@ -431,19 +476,26 @@ fn load(root: &Path, index: &Index, project: &ProjectManifest) -> Result<Prepare
             return Err(invalid("Frame index hash mismatch"));
         }
     }
+    let mut features_bytes = None;
     for (path, hash) in &m.files {
         safe_relative(path)?;
-        if !fs::canonicalize(directory.join(path))
-            .map_err(invalid)?
-            .starts_with(root)
-        {
+        let artifact = fs::canonicalize(directory.join(path)).map_err(invalid)?;
+        if !artifact.starts_with(root) {
             return Err(invalid("Artifact escapes project root"));
         }
-        if file_hash(&directory.join(path))? != *hash {
+        let actual = if path == Path::new("features.f32") {
+            let bytes = fs::read(artifact).map_err(invalid)?;
+            let hash = digest(&bytes);
+            features_bytes = Some(bytes);
+            hash
+        } else {
+            file_hash(&artifact)?
+        };
+        if actual != *hash {
             return Err(invalid("Cache artifact corrupted"));
         }
     }
-    let bytes = fs::read(directory.join("features.f32")).map_err(invalid)?;
+    let bytes = features_bytes.ok_or_else(|| invalid("Missing features.f32"))?;
     if bytes.len() % 4 != 0 {
         return Err(invalid("Corrupt feature bytes"));
     }
@@ -455,7 +507,7 @@ fn load(root: &Path, index: &Index, project: &ProjectManifest) -> Result<Prepare
     );
     let prepared = PreparedProject {
         project_directory: root.to_path_buf(),
-        project_id: project.id,
+        project_id: m.project_id,
         identity: m.identity,
         preprocessing: m.preprocessing,
         canonical_video: directory.join("video.mkv"),
@@ -466,6 +518,7 @@ fn load(root: &Path, index: &Index, project: &ProjectManifest) -> Result<Prepare
         frames: m.frames,
         features,
         generation: directory,
+        manifest_sha256: manifest_sha256.into(),
     };
     prepared.validate()?;
     Ok(prepared)
@@ -478,33 +531,9 @@ pub fn reopen_generation(
     relative: &Path,
     manifest_sha256: &str,
 ) -> Result<PreparedProject> {
-    safe_relative(relative)?;
     let root = fs::canonicalize(root).map_err(invalid)?;
-    let path = root.join(relative).join("manifest.json");
-    if !fs::canonicalize(&path).map_err(invalid)?.starts_with(&root) {
-        return Err(invalid("Prepared manifest escapes project"));
-    }
-    let bytes = fs::read(path).map_err(invalid)?;
-    if digest(&bytes) != manifest_sha256 {
-        return Err(invalid("Pinned prepared manifest changed"));
-    }
-    let generation: Generation = serde_json::from_slice(&bytes).map_err(invalid)?;
-    let index = Index {
-        generation: relative.into(),
-        manifest_sha256: manifest_sha256.into(),
-        input_identity: generation.input_identity,
-    };
-    let prepared = load(&root, &index, project)?;
-    if prepared.preprocessing.source_sha256 != project.source_video.sha256
-        || prepared.preprocessing.cache_directory != relative
-        || project
-            .preprocessing
-            .as_ref()
-            .is_some_and(|p| p != &prepared.preprocessing)
-    {
-        return Err(invalid("Pinned preprocessing does not match project"));
-    }
-    Ok(prepared)
+    let candidate = read_generation(&root, relative, manifest_sha256, project)?;
+    load_artifacts(&root, candidate, manifest_sha256)
 }
 struct Cleanup {
     path: PathBuf,
@@ -593,21 +622,19 @@ pub fn prepare_project(
         &stage_inputs,
     ))?;
     let index_path = cache.join("index.json");
-    let previous = fs::read(&index_path)
+    let index = fs::read(&index_path)
         .ok()
-        .and_then(|bytes| serde_json::from_slice::<Index>(&bytes).ok())
-        .and_then(|index| candidate(&root, &index, project).ok());
-    if let Ok(bytes) = fs::read(&index_path) {
-        if let Ok(index) = serde_json::from_slice::<Index>(&bytes) {
-            if index.input_identity == input_identity {
-                if let Ok(prepared) = load(&root, &index, project) {
-                    check(cancel)?;
-                    progress(observer, "prepared-cache", 1, Some(1))?;
-                    return Ok(prepared);
-                }
+        .and_then(|bytes| serde_json::from_slice::<Index>(&bytes).ok());
+    if let Some(index) = &index {
+        if index.input_identity == input_identity {
+            if let Ok(prepared) = load(&root, index, project) {
+                check(cancel)?;
+                progress(observer, "prepared-cache", 1, Some(1))?;
+                return Ok(prepared);
             }
         }
     }
+    let previous = index.and_then(|index| candidate(&root, &index, project).ok());
     let stage = cache.join(format!("pending-{}", ProjectId::new()));
     fs::create_dir(&stage).map_err(invalid)?;
     let cleanup = Cleanup {
@@ -912,7 +939,7 @@ mod tests {
                 landmarks: vec![],
             });
         }
-        let generation = Generation {
+        let mut generation = Generation {
             project_id: p.id,
             dependencies: None,
             identity: "output identity".into(),
@@ -943,6 +970,17 @@ mod tests {
         let mut other = p.clone();
         other.id = ProjectId::new();
         assert!(load(&root, &index, &other).is_err());
+        // A valid digest alone does not bind a generation claiming a different path.
+        generation.preprocessing.cache_directory = "cache/other".into();
+        let wrong = serde_json::to_vec(&generation).unwrap();
+        fs::write(dir.join("manifest.json"), &wrong).unwrap();
+        let wrong_index = Index {
+            generation: index.generation.clone(),
+            manifest_sha256: digest(&wrong),
+            input_identity: index.input_identity.clone(),
+        };
+        assert!(load(&root, &wrong_index, &p).is_err());
+        fs::write(dir.join("manifest.json"), bytes).unwrap();
         fs::write(dir.join("features.f32"), b"broken").unwrap();
         assert!(load(&root, &index, &p).is_err());
         fs::write(dir.join("frames/0.f32"), b"broken").unwrap();

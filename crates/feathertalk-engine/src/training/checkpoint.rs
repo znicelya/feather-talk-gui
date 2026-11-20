@@ -1,11 +1,14 @@
 //! Immutable checkpoint generations; project.json is the publication point.
 use super::{
     checkpoint_validation as validation,
-    state::{TrainingMetadata, TrainingState, adam, invalid},
+    state::{TrainingData, TrainingMetadata, TrainingState, adam, invalid},
 };
 use crate::{
     ExecutionDevice,
-    data::prepared::{PreparedProject, file_hash, reopen_generation},
+    data::{
+        prepared::{PreparedProject, file_hash, reopen_generation},
+        sampler::PairSampler,
+    },
     models::feathertalk::FeatherTalk,
 };
 use burn_store::{BurnpackStore, ModuleSnapshot};
@@ -74,24 +77,8 @@ pub(super) fn validate_metadata_values(m: &TrainingMetadata) -> Result<()> {
 pub(super) fn validate_metadata(root: &Path, m: &TrainingMetadata) -> Result<PreparedProject> {
     validate_metadata_values(m)?;
     let project = read_project(root)?;
-    if project.id != m.project_id
-        || project.source_video != m.source
-        || project.model_identity != m.project_model_identity
-    {
-        return Err(invalid(
-            "Checkpoint belongs to different project/source/model",
-        ));
-    }
-    let source = if m.source.path.is_absolute() {
-        m.source.path.clone()
-    } else {
-        root.join(&m.source.path)
-    };
-    if fs::metadata(&source).map_err(invalid)?.len() != m.source.size_bytes
-        || file_hash(&source)? != m.source.sha256
-    {
-        return Err(invalid("Source media changed"));
-    }
+    validate_project_binding(&project, m)?;
+    validate_source(root, &m.source)?;
     let prepared = reopen_generation(
         root,
         &project,
@@ -101,8 +88,33 @@ pub(super) fn validate_metadata(root: &Path, m: &TrainingMetadata) -> Result<Pre
     if prepared.identity != m.prepared_identity || prepared.preprocessing != m.preprocessing {
         return Err(invalid("Checkpoint data identity differs"));
     }
-    crate::data::sampler::PairSampler::restore(&prepared, m.sampler.clone())?;
+    PairSampler::validate_state(&prepared, &m.sampler)?;
     Ok(prepared)
+}
+pub(super) fn validate_source(root: &Path, source: &SourceVideo) -> Result<()> {
+    let path = root.join(&source.path);
+    if fs::metadata(&path).map_err(invalid)?.len() != source.size_bytes
+        || file_hash(&path)? != source.sha256
+    {
+        return Err(invalid("Source media changed"));
+    }
+    Ok(())
+}
+fn validate_project_binding(project: &ProjectManifest, m: &TrainingMetadata) -> Result<()> {
+    if project.schema_version != 1
+        || project.id != m.project_id
+        || project.source_video != m.source
+        || project.model_identity != m.project_model_identity
+        || project
+            .preprocessing
+            .as_ref()
+            .is_some_and(|p| p != &m.preprocessing)
+    {
+        return Err(invalid(
+            "Checkpoint belongs to different project/source/model",
+        ));
+    }
+    Ok(())
 }
 pub(crate) fn model_bytes(model: &FeatherTalk) -> Result<Vec<u8>> {
     let mut store = BurnpackStore::from_bytes(None);
@@ -124,7 +136,7 @@ impl MaterializedSnapshot {
         validate_metadata(&state.project_directory, &state.metadata)?;
         Self::capture_tensors(state)
     }
-    // The trainer uses this only with a verified data binding for the active run.
+    // Validate just the state payload; callers handle the project/data binding.
     pub(super) fn capture_tensors(state: &TrainingState) -> Result<Self> {
         validate_metadata_values(&state.metadata)?;
         let model = model_bytes(&state.model)?;
@@ -147,16 +159,20 @@ impl MaterializedSnapshot {
         project_directory: &Path,
         device: &ExecutionDevice,
     ) -> Result<TrainingState> {
-        let root = fs::canonicalize(project_directory).map_err(invalid)?;
-        validate_metadata(&root, &self.metadata)?;
-        self.restore_tensors(root, device)
+        self.restore_with_data(project_directory, device)
+            .map(|(state, _)| state)
     }
-    // Restore either a checked checkpoint or an in-process snapshot from the same step.
-    pub(super) fn restore_tensors(
+    pub(super) fn restore_with_data(
         &self,
-        root: PathBuf,
+        project_directory: &Path,
         device: &ExecutionDevice,
-    ) -> Result<TrainingState> {
+    ) -> Result<(TrainingState, PreparedProject)> {
+        let root = fs::canonicalize(project_directory).map_err(invalid)?;
+        let prepared = validate_metadata(&root, &self.metadata)?;
+        let state = self.restore_tensors(root, device)?;
+        Ok((state, prepared))
+    }
+    fn restore_tensors(&self, root: PathBuf, device: &ExecutionDevice) -> Result<TrainingState> {
         super::state::with_seed(
             &device.device,
             self.metadata.seed_policy.initialization_seed(),
@@ -185,6 +201,9 @@ impl MaterializedSnapshot {
     }
     /// Private probe handoff. Directory must be new; this never publishes a ModelRef.
     pub fn write_private(&self, directory: &Path) -> Result<()> {
+        self.write_payload(directory).map(|_| ())
+    }
+    fn write_payload(&self, directory: &Path) -> Result<(DiskManifest, Vec<u8>)> {
         fs::create_dir(directory).map_err(invalid)?;
         write_sync(&directory.join("model.bpk"), &self.model)?;
         write_sync(&directory.join("adam.bpk"), &self.optimizer)?;
@@ -195,10 +214,9 @@ impl MaterializedSnapshot {
             optimizer_sha256: digest(&self.optimizer),
             optimizer_size: self.optimizer.len() as u64,
         };
-        write_sync(
-            &directory.join("manifest.json"),
-            &serde_json::to_vec(&manifest).map_err(invalid)?,
-        )
+        let bytes = serde_json::to_vec(&manifest).map_err(invalid)?;
+        write_sync(&directory.join("manifest.json"), &bytes)?;
+        Ok((manifest, bytes))
     }
     pub fn read_private(directory: &Path) -> Result<Self> {
         let root = fs::canonicalize(directory).map_err(invalid)?;
@@ -263,6 +281,22 @@ pub(super) fn save_with_hook(
     destination: &Path,
     hook: impl Fn(&str) -> Result<()>,
 ) -> Result<ModelRef> {
+    save_generation(state, destination, None, hook)
+}
+/// Publish newly serialized state using the task's already verified inputs.
+pub(super) fn save_training_checkpoint(
+    state: &TrainingState,
+    data: &TrainingData,
+    destination: &Path,
+) -> Result<ModelRef> {
+    save_generation(state, destination, Some(data), |_| Ok(()))
+}
+fn save_generation(
+    state: &TrainingState,
+    destination: &Path,
+    data: Option<&TrainingData>,
+    hook: impl Fn(&str) -> Result<()>,
+) -> Result<ModelRef> {
     let root = &state.project_directory;
     let parent = fs::canonicalize(
         destination
@@ -277,11 +311,16 @@ pub(super) fn save_with_hook(
         .file_name()
         .ok_or_else(|| invalid("Missing destination name"))?;
     let destination = parent.join(name);
-    let snapshot = MaterializedSnapshot::capture(state)?;
+    let snapshot = if let Some(data) = data {
+        data.for_state(state)?;
+        MaterializedSnapshot::capture_tensors(state)?
+    } else {
+        MaterializedSnapshot::capture(state)?
+    };
     let id = ProjectId::new().to_string();
     let stage = parent.join(format!(".checkpoint-stage-{id}"));
     let _cleanup = Cleanup(stage.clone());
-    snapshot.write_private(&stage)?;
+    let (manifest, manifest_bytes) = snapshot.write_payload(&stage)?;
     hook("staged")?;
     fs::rename(&stage, &destination).map_err(invalid)?;
     hook("published")?;
@@ -295,29 +334,25 @@ pub(super) fn save_with_hook(
         .open(&lock)
         .map_err(invalid)?;
     lock_file.try_lock().map_err(invalid)?;
-    validate_metadata(root, &state.metadata)?;
-    let before = fs::read(root.join("project.json")).map_err(invalid)?;
-    let mut project: ProjectManifest = serde_json::from_slice(&before).map_err(invalid)?;
-    if project.id != state.metadata.project_id
-        || project.source_video != state.metadata.source
-        || project.model_identity != state.metadata.project_model_identity
-    {
-        return Err(invalid("Project binding changed while staging"));
+    if data.is_none() {
+        validate_metadata(root, &state.metadata)?;
     }
+    let before = fs::read(contained(root, Path::new("project.json"))?).map_err(invalid)?;
+    let mut project: ProjectManifest = serde_json::from_slice(&before).map_err(invalid)?;
+    validate_project_binding(&project, &state.metadata)?;
     let model_ref = ModelRef {
         project_id: state.metadata.project_id,
         run_id: state.metadata.run_id,
         checkpoint_id: id.clone(),
     };
-    let manifest = fs::read(destination.join("manifest.json")).map_err(invalid)?;
     project.checkpoints.push(CheckpointEntry {
         model_ref: model_ref.clone(),
         relative_path: destination
             .strip_prefix(root)
             .map_err(invalid)?
             .join("manifest.json"),
-        sha256: digest(&manifest),
-        size_bytes: manifest.len() as u64,
+        sha256: digest(&manifest_bytes),
+        size_bytes: manifest_bytes.len() as u64,
         epoch: state.metadata.epoch,
         step: state.metadata.global_step,
         config: state.metadata.config.clone(),
@@ -325,7 +360,7 @@ pub(super) fn save_with_hook(
             kind: "feathertalk".into(),
             architecture_version: state.metadata.architecture.clone(),
             source_sha256: state.metadata.source.sha256.clone(),
-            weights_sha256: digest(&snapshot.model),
+            weights_sha256: manifest.model_sha256,
         },
     });
     let pending = root.join(format!(".project-{id}.tmp"));
@@ -405,9 +440,7 @@ pub(super) fn load_checkpoint_with_data(
     let root = fs::canonicalize(project_directory).map_err(invalid)?;
     let (directory, manifest) = committed_manifest(&root, model_ref)?;
     let snapshot = MaterializedSnapshot::read_payload(&directory, manifest)?;
-    let pinned = validate_metadata(&root, snapshot.metadata())?;
-    let state = snapshot.restore_tensors(root, device)?;
-    Ok((state, pinned))
+    snapshot.restore_with_data(&root, device)
 }
 
 use burn::module::Module;

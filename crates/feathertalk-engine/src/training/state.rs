@@ -15,7 +15,7 @@ use feathertalk_core::*;
 use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 
 pub(crate) fn invalid(e: impl std::fmt::Display) -> AppError {
@@ -95,17 +95,15 @@ pub struct TrainingState {
     pub(crate) project_directory: PathBuf,
 }
 
-/// A validated binding for one training session. The borrowed feature data and
-/// frame index cannot change during the session; sampled frame bytes are checked
-/// on every read. External checkpoint boundaries still verify the entire cache.
-pub(super) struct TrainingData<'a> {
-    prepared: &'a PreparedProject,
+/// An owned binding for one task. Hashes are verified on entry; the task assumes
+/// the pinned cache generation stays immutable until it ends.
+pub(super) struct TrainingData {
+    prepared: Arc<PreparedProject>,
     source: SourceVideo,
     model: Option<ModelIdentity>,
-    manifest_sha256: String,
 }
-impl<'a> TrainingData<'a> {
-    pub(super) fn verify(state: &TrainingState, prepared: &'a PreparedProject) -> Result<Self> {
+impl TrainingData {
+    pub(super) fn verify(state: &TrainingState, prepared: &PreparedProject) -> Result<Self> {
         let pinned =
             super::checkpoint::validate_metadata(state.project_directory(), &state.metadata)?;
         Self::bind(state, prepared, &pinned)
@@ -113,45 +111,43 @@ impl<'a> TrainingData<'a> {
 
     pub(super) fn bind(
         state: &TrainingState,
-        prepared: &'a PreparedProject,
+        prepared: &PreparedProject,
         pinned: &PreparedProject,
     ) -> Result<Self> {
-        let data = Self {
-            prepared,
-            source: state.metadata.source.clone(),
-            model: state.metadata.project_model_identity.clone(),
-            manifest_sha256: state.metadata.prepared_manifest_sha256.clone(),
-        };
-        data.for_state(state)?;
-        if prepared.features != pinned.features
-            || prepared.canonical_frame_count != pinned.canonical_frame_count
-            || prepared.feature_frame_count != pinned.feature_frame_count
-            || prepared.usable_frames != pinned.usable_frames
-            || prepared.frames.len() != pinned.frames.len()
-            || prepared.frames.iter().zip(&pinned.frames).any(|(a, b)| {
-                a.file != b.file || a.sha256 != b.sha256 || a.landmarks != b.landmarks
-            })
-            || prepared.generation != pinned.generation
-            || prepared.canonical_video != pinned.canonical_video
-            || prepared.canonical_audio != pinned.canonical_audio
-        {
+        Self::check_supplied(prepared, pinned)?;
+        Self::from_verified(state, pinned.clone())
+    }
+
+    fn check_supplied(prepared: &PreparedProject, pinned: &PreparedProject) -> Result<()> {
+        if prepared != pinned {
             return Err(invalid(
                 "Prepared in-memory data differs from pinned generation",
             ));
         }
+        Ok(())
+    }
+
+    // Only prepared data obtained directly from preparation or a verified load.
+    pub(super) fn from_verified(state: &TrainingState, prepared: PreparedProject) -> Result<Self> {
+        let data = Self {
+            prepared: Arc::new(prepared),
+            source: state.metadata.source.clone(),
+            model: state.metadata.project_model_identity.clone(),
+        };
+        data.for_state(state)?;
         Ok(data)
     }
 
-    pub(super) fn for_state(&self, state: &TrainingState) -> Result<&'a PreparedProject> {
+    pub(super) fn for_state(&self, state: &TrainingState) -> Result<&Arc<PreparedProject>> {
         let m = &state.metadata;
-        let prepared = self.prepared;
+        let prepared = &self.prepared;
         if m.project_id != prepared.project_id
             || m.prepared_identity != prepared.identity
             || m.preprocessing != prepared.preprocessing
             || state.project_directory != prepared.project_directory
             || m.source != self.source
             || m.project_model_identity != self.model
-            || m.prepared_manifest_sha256 != self.manifest_sha256
+            || m.prepared_manifest_sha256 != prepared.manifest_sha256
         {
             return Err(invalid(
                 "Training state and verified prepared project differ",
@@ -203,6 +199,18 @@ impl TrainingState {
             project_directory,
         }
     }
+    /// Start an independent tentative update without a device-to-host roundtrip.
+    /// Burn shares tensor storage until use; the optimizer owns its context map,
+    /// and FeatherTalk's normalization buffers have an independent mutex.
+    pub(super) fn step_candidate(&self) -> Self {
+        Self {
+            model: self.model.clone(),
+            optimizer: self.optimizer.clone(),
+            optimizer_config: self.optimizer_config,
+            metadata: self.metadata.clone(),
+            project_directory: self.project_directory.clone(),
+        }
+    }
     /// Owned record export; optimizer configuration cannot be replaced by callers.
     pub fn optimizer_bytes(&self) -> Result<Vec<u8>> {
         self.validate_optimizer_config()?;
@@ -244,27 +252,45 @@ impl TrainingState {
         Self::fresh_with_data(request, prepared, device).map(|(state, _)| state)
     }
 
-    pub(super) fn fresh_with_data<'a>(
+    pub(super) fn fresh_with_data(
         request: &TrainRequest,
-        prepared: &'a PreparedProject,
+        prepared: &PreparedProject,
         device: &ExecutionDevice,
-    ) -> Result<(Self, TrainingData<'a>)> {
+    ) -> Result<(Self, TrainingData)> {
+        let root = std::fs::canonicalize(&prepared.project_directory).map_err(invalid)?;
+        let project = super::checkpoint::read_project(&root)?;
+        super::checkpoint::validate_source(&root, &project.source_video)?;
+        let pinned = crate::data::prepared::reopen_generation(
+            &root,
+            &project,
+            &prepared.preprocessing.cache_directory,
+            &prepared.manifest_sha256,
+        )?;
+        TrainingData::check_supplied(prepared, &pinned)?;
+        Self::fresh_verified(request, pinned, &project, device)
+    }
+
+    pub(super) fn fresh_verified(
+        request: &TrainRequest,
+        prepared: PreparedProject,
+        project: &ProjectManifest,
+        device: &ExecutionDevice,
+    ) -> Result<(Self, TrainingData)> {
         validate_adam_config(&request.config)?;
         if request.resume.is_some()
             || request.project_id != prepared.project_id
+            || request.project_id != project.id
+            || prepared.preprocessing.source_sha256 != project.source_video.sha256
+            || project
+                .preprocessing
+                .as_ref()
+                .is_some_and(|p| p != &prepared.preprocessing)
             || prepared.usable_frames < 2
         {
             return Err(invalid(
                 "Fresh training requires matching prepared project and at least one pair",
             ));
         }
-        let root = std::fs::canonicalize(&prepared.project_directory).map_err(invalid)?;
-        let project = super::checkpoint::read_project(&root)?;
-        let manifest_hash = crate::data::prepared::file_hash(
-            &root
-                .join(&prepared.preprocessing.cache_directory)
-                .join("manifest.json"),
-        )?;
         let policy = SeedPolicy::new(request.config.seed);
         let model = with_seed(&device.device, policy.initialization_seed(), || {
             Ok(FeatherTalk::new(&device.device.clone().autodiff()))
@@ -273,11 +299,11 @@ impl TrainingState {
             schema_version: 2,
             project_id: project.id,
             run_id: TrainingRunId::new(),
-            source: project.source_video,
-            project_model_identity: project.model_identity,
+            source: project.source_video.clone(),
+            project_model_identity: project.model_identity.clone(),
             preprocessing: prepared.preprocessing.clone(),
             prepared_identity: prepared.identity.clone(),
-            prepared_manifest_sha256: manifest_hash,
+            prepared_manifest_sha256: prepared.manifest_sha256.clone(),
             architecture: "feathertalk-default-v1-447".into(),
             vgg_identity: None,
             config: request.config.clone(),
@@ -286,11 +312,16 @@ impl TrainingState {
             actual_batch: request.config.batch_size,
             epoch: 0,
             global_step: 0,
-            sampler: PairSampler::new(prepared, request.config.seed)?.snapshot(),
+            sampler: PairSampler::initial_state(&prepared, request.config.seed),
             seed_policy: policy,
         };
-        let state = Self::from_parts(model, adam(&request.config)?, metadata, root);
-        let data = TrainingData::verify(&state, prepared)?;
+        let state = Self::from_parts(
+            model,
+            adam(&request.config)?,
+            metadata,
+            prepared.project_directory.clone(),
+        );
+        let data = TrainingData::from_verified(&state, prepared)?;
         Ok((state, data))
     }
     pub fn project_directory(&self) -> &Path {

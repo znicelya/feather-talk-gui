@@ -69,10 +69,18 @@ fn choice(state: &mut u64, n: usize) -> usize {
 pub struct PairSampler {
     prepared: Arc<PreparedProject>,
     state: SamplerState,
+    check_frame_hashes: bool,
 }
 impl PairSampler {
     pub fn new(prepared: &PreparedProject, seed: u64) -> Result<Self> {
         prepared.validate()?;
+        Ok(Self {
+            prepared: Arc::new(prepared.clone()),
+            state: Self::initial_state(prepared, seed),
+            check_frame_hashes: true,
+        })
+    }
+    pub(crate) fn initial_state(prepared: &PreparedProject, seed: u64) -> SamplerState {
         let mut state = SamplerState {
             version: 1,
             algorithm: "splitmix64-rejection-fisher-yates-v1".into(),
@@ -86,13 +94,18 @@ impl PairSampler {
             reference_draws: 0,
         };
         shuffle(&mut state);
-        Ok(Self {
-            prepared: Arc::new(prepared.clone()),
-            state,
-        })
+        state
     }
     pub fn restore(prepared: &PreparedProject, state: SamplerState) -> Result<Self> {
         prepared.validate()?;
+        Self::validate_state(prepared, &state)?;
+        Ok(Self {
+            prepared: Arc::new(prepared.clone()),
+            state,
+            check_frame_hashes: true,
+        })
+    }
+    pub(crate) fn validate_state(prepared: &PreparedProject, state: &SamplerState) -> Result<()> {
         let mut sorted = state.permutation.clone();
         sorted.sort_unstable();
         if state.version != 1
@@ -105,20 +118,35 @@ impl PairSampler {
                 "Sampler state does not match prepared dataset or algorithm",
             ));
         }
-        Ok(Self {
-            prepared: Arc::new(prepared.clone()),
+        Ok(())
+    }
+    /// The generation and initial sampler state were verified at the task boundary.
+    pub(crate) fn restore_verified(prepared: Arc<PreparedProject>, state: SamplerState) -> Self {
+        Self {
+            prepared,
             state,
-        })
+            check_frame_hashes: false,
+        }
     }
     pub fn snapshot(&self) -> SamplerState {
         self.state.clone()
+    }
+    pub(crate) fn at_epoch_end(&self) -> bool {
+        self.state.cursor == self.state.permutation.len()
+    }
+    fn read_frame(&self, index: usize) -> Result<super::geometry::PreparedFrame> {
+        if self.check_frame_hashes {
+            self.prepared.read_frame(index)
+        } else {
+            self.prepared.read_verified_frame(index)
+        }
     }
     /// Returns None at the epoch boundary. Call advance_epoch explicitly, after checkpointing.
     pub fn next_batch(&mut self, batch_size: usize) -> Result<Option<TrainingBatch>> {
         if batch_size == 0 || batch_size > 1024 {
             return Err(invalid("Batch size must be 1..=1024"));
         }
-        if self.state.cursor == self.state.permutation.len() {
+        if self.at_epoch_end() {
             return Ok(None);
         }
         let mut next = self.state.clone();
@@ -136,11 +164,11 @@ impl PairSampler {
                 .reference_draws
                 .checked_add(1)
                 .ok_or_else(|| invalid("Reference counter overflow"))?;
-            let r = self.prepared.read_frame(reference)?;
+            let r = self.read_frame(reference)?;
             references.push(reference);
             pairs.push([i, i + 1]);
             for index in [i, i + 1] {
-                let f = self.prepared.read_frame(index)?;
+                let f = self.read_frame(index)?;
                 image.extend_from_slice(&r.target);
                 image.extend_from_slice(&f.masked);
                 target.extend(f.target);
@@ -167,7 +195,7 @@ impl PairSampler {
         Ok(Some(batch))
     }
     pub fn advance_epoch(&mut self) -> Result<()> {
-        if self.state.cursor != self.state.permutation.len() {
+        if !self.at_epoch_end() {
             return Err(invalid("Cannot advance an incomplete epoch"));
         }
         self.state.epoch = self
@@ -190,7 +218,7 @@ impl PairSampler {
                 "Prefetch capacity must be 1..=32 and batch size 1..=1024",
             ));
         }
-        let committed = self.snapshot();
+        let committed = self.clone();
         let consumer_cancel = cancel.clone();
         let (sender, receiver) = mpsc::sync_channel(capacity);
         let stop = Cancellation::new();
@@ -241,7 +269,7 @@ fn shuffle(state: &mut SamplerState) {
 }
 type PrefetchItem = (Result<Option<TrainingBatch>>, SamplerState);
 pub struct PrefetchSampler {
-    committed: SamplerState,
+    committed: PairSampler,
     receiver: mpsc::Receiver<PrefetchItem>,
     stop: Cancellation,
     cancel: Cancellation,
@@ -250,6 +278,9 @@ pub struct PrefetchSampler {
 }
 impl PrefetchSampler {
     pub fn snapshot(&self) -> SamplerState {
+        self.committed.snapshot()
+    }
+    pub(crate) fn into_sampler(self) -> PairSampler {
         self.committed.clone()
     }
     pub fn next_batch(&mut self) -> Result<Option<TrainingBatch>> {
@@ -269,7 +300,7 @@ impl PrefetchSampler {
             self.ended = true;
         }
         if result.is_ok() {
-            self.committed = state;
+            self.committed.state = state;
         }
         result
     }
@@ -328,6 +359,7 @@ mod tests {
             frames,
             features: Arc::new((0..6 * 2048).map(|n| n as f32).collect()),
             generation: root,
+            manifest_sha256: "test".into(),
         }
     }
     #[test]

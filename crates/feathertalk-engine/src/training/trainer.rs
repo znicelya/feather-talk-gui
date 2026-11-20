@@ -41,15 +41,26 @@ pub fn complete_step(
 ) -> Result<StepOutcome> {
     crate::media::ffmpeg::check(cancel)?;
     let data = TrainingData::verify(state, prepared)?;
-    complete_step_validated(state, &data, vgg, device, cancel)
+    complete_step_inner(state, &data, vgg, device, cancel, true)
 }
 
 pub(super) fn complete_step_validated(
     state: &mut TrainingState,
-    data: &TrainingData<'_>,
+    data: &TrainingData,
     vgg: &VggFeatures,
     device: &ExecutionDevice,
     cancel: &Cancellation,
+) -> Result<StepOutcome> {
+    complete_step_inner(state, data, vgg, device, cancel, false)
+}
+
+fn complete_step_inner(
+    state: &mut TrainingState,
+    data: &TrainingData,
+    vgg: &VggFeatures,
+    device: &ExecutionDevice,
+    cancel: &Cancellation,
+    verify_payload: bool,
 ) -> Result<StepOutcome> {
     crate::media::ffmpeg::check(cancel)?;
     let prepared = data.for_state(state)?;
@@ -82,8 +93,12 @@ pub(super) fn complete_step_validated(
     }
     // An independent candidate owns BN, parameters and Adam. Errors never expose
     // partial mutations in the caller's still-committed state. No nested RNG lock.
-    let mut sampler = PairSampler::restore(prepared, state.metadata.sampler.clone())?;
-    if sampler.snapshot().cursor == sampler.snapshot().permutation.len() {
+    let mut sampler = if verify_payload {
+        PairSampler::restore(prepared, state.metadata.sampler.clone())?
+    } else {
+        PairSampler::restore_verified(prepared.clone(), state.metadata.sampler.clone())
+    };
+    if sampler.at_epoch_end() {
         sampler.advance_epoch()?;
     }
     let batch_size = state.metadata.actual_batch as usize;
@@ -96,19 +111,20 @@ pub(super) fn complete_step_validated(
             cancel.clone(),
         )?;
         let batch = prefetched.next_batch()?;
-        sampler = PairSampler::restore(prepared, prefetched.snapshot())?;
+        sampler = prefetched.into_sampler();
         batch
     }
     .ok_or_else(|| invalid("Prepared dataset contains no training pair"))?;
-    if sampler.snapshot().cursor == sampler.snapshot().permutation.len() {
+    if sampler.at_epoch_end() {
         sampler.advance_epoch()?;
     }
     let staged = sampler.snapshot();
     let epoch = u32::try_from(staged.epoch).map_err(invalid)?;
     crate::media::ffmpeg::check(cancel)?;
-    let backup = MaterializedSnapshot::capture_tensors(state)?;
-    let mut candidate = backup.restore_tensors(state.project_directory().to_path_buf(), device)?;
-    drop(backup);
+    if verify_payload {
+        MaterializedSnapshot::capture_tensors(state)?;
+    }
+    let mut candidate = state.step_candidate();
     candidate.metadata.vgg_identity = Some(vgg.identity().clone());
     crate::media::ffmpeg::check(cancel)?;
     let seed = state
@@ -120,8 +136,8 @@ pub(super) fn complete_step_validated(
         let prediction = candidate
             .model
             .forward(
-                tensor(batch.image.clone(), &d).reshape([b * 2, 6, 144, 144]),
-                tensor(batch.audio.clone(), &d).reshape([b * 2, 40, 1024]),
+                tensor(batch.image, &d).reshape([b * 2, 6, 144, 144]),
+                tensor(batch.audio, &d).reshape([b * 2, 40, 1024]),
             )
             .reshape([b, 2, 3, 144, 144]);
         #[cfg(test)]
@@ -150,8 +166,8 @@ pub(super) fn complete_step_validated(
         super::worker_acceptance::after_forward(state.project_directory(), cancel)?;
         let output = compute_loss(
             prediction,
-            tensor(batch.target.clone(), &d),
-            tensor(batch.mask.clone(), &d),
+            tensor(batch.target, &d),
+            tensor(batch.mask, &d),
             vgg,
             &candidate.metadata.config.loss,
         );
@@ -192,9 +208,9 @@ pub(super) fn complete_step_validated(
     candidate.metadata.global_step = next_step;
     candidate.metadata.epoch = epoch;
     candidate.metadata.sampler = staged;
-    // Validate finite updated model and the complete 504-moment/time inventory
-    // before publication; this is deliberately correctness-first host overhead.
-    MaterializedSnapshot::capture_tensors(&candidate)?;
+    if verify_payload {
+        MaterializedSnapshot::capture_tensors(&candidate)?;
+    }
     *state = candidate;
     Ok(StepOutcome {
         losses,
@@ -226,7 +242,8 @@ mod tests {
             device: DevicePolicy::Auto,
             resume: None,
         };
-        let mut state = TrainingState::fresh(&request, &prepared, &device).unwrap();
+        let (mut state, data) =
+            TrainingState::fresh_with_data(&request, &prepared, &device).unwrap();
         let before_model = super::super::checkpoint::model_bytes(&state.model).unwrap();
         let before_adam = state.optimizer_bytes().unwrap();
         let before = state.metadata.clone();
@@ -236,7 +253,7 @@ mod tests {
         )
         .unwrap();
         FAIL_AFTER_FORWARD.with(|flag| flag.set(true));
-        let err = complete_step(&mut state, &prepared, &vgg, &device, &Cancellation::new())
+        let err = complete_step_validated(&mut state, &data, &vgg, &device, &Cancellation::new())
             .err()
             .unwrap();
         assert!(err.message.contains("after forward and BN mutation"));

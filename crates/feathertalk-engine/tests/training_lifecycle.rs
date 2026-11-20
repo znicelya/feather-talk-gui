@@ -3,6 +3,7 @@ use feathertalk_core::*;
 use feathertalk_engine::training::{
     batch_probe::TrainingRuntime, checkpoint::load_checkpoint, metrics::metrics_page, *,
 };
+use feathertalk_engine::{ExecutionDevice, data::prepared::PreparedProject};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -134,32 +135,43 @@ fn actual_cancel_save_resume_total_epochs_history() {
     )));
 }
 
-fn corrupt_cache_between_steps(relative: &str) -> (AppError, Vec<u64>) {
-    struct Corrupt {
-        file: PathBuf,
-        steps: Mutex<Vec<u64>>,
-    }
-    impl TaskObserver for Corrupt {
-        fn emit(&self, event: EventPayload) -> Result<()> {
-            if let EventPayload::Metrics(metric) = event {
-                self.steps.lock().unwrap().push(metric.step);
-                if metric.step == 1 {
-                    let mut bytes = fs::read(&self.file).unwrap();
+struct EditAfterFirstStep {
+    file: PathBuf,
+    truncate: bool,
+    steps: Mutex<Vec<u64>>,
+}
+impl TaskObserver for EditAfterFirstStep {
+    fn emit(&self, event: EventPayload) -> Result<()> {
+        if let EventPayload::Metrics(metric) = event {
+            self.steps.lock().unwrap().push(metric.step);
+            if metric.step == 1 {
+                let mut bytes = fs::read(&self.file).unwrap();
+                if self.truncate {
+                    bytes.pop();
+                } else {
                     bytes[0] ^= 0xff;
-                    fs::write(&self.file, bytes).unwrap();
-                    // Guarantee that even on a faster device the next step is sampled.
-                    std::thread::sleep(Duration::from_millis(500));
                 }
+                fs::write(&self.file, bytes).unwrap();
+                // Guarantee that even on a faster device the next step is sampled.
+                std::thread::sleep(Duration::from_millis(500));
             }
-            Ok(())
         }
+        Ok(())
     }
-    let (root, prepared) = training_fixture::fixture();
-    let device = training_fixture::device();
-    let observer = Corrupt {
-        file: root
+}
+
+fn edit_frame_between_steps(
+    prepared: &PreparedProject,
+    device: &ExecutionDevice,
+    truncate: bool,
+) -> (TrainRequest, Result<TrainingResult>, Vec<u64>) {
+    let observer = EditAfterFirstStep {
+        // The fixture has just one training pair, so this frame is read each step.
+        file: prepared
+            .project_directory
             .join(&prepared.preprocessing.cache_directory)
-            .join(relative),
+            .join("frames/0.f32"),
+        truncate,
         steps: Mutex::default(),
     };
     let request = TrainRequest {
@@ -175,6 +187,31 @@ fn corrupt_cache_between_steps(relative: &str) -> (AppError, Vec<u64>) {
         device: DevicePolicy::Auto,
         resume: None,
     };
+    let result = train(
+        &request,
+        prepared,
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.artifacts/assets/vgg19"),
+        device,
+        &TrainingRuntime {
+            probe_runner: prepared.project_directory.join("must-never-run.exe"),
+        },
+        &observer,
+        &Cancellation::new(),
+    );
+    (request, result, observer.steps.into_inner().unwrap())
+}
+
+#[test]
+fn reuses_verified_cache_until_new_task() {
+    let (root, prepared) = training_fixture::fixture();
+    let device = training_fixture::device();
+    let (mut request, result, steps) = edit_frame_between_steps(&prepared, &device, false);
+    let result = result.unwrap();
+    assert_eq!(steps, [1, 2]);
+    assert_eq!(result.stopping_reason, StoppingReason::Completed);
+    assert_eq!(result.global_step, 2);
+    request.resume = Some(result.committed_model);
+    request.config.epochs = 3;
     let error = train(
         &request,
         &prepared,
@@ -183,26 +220,24 @@ fn corrupt_cache_between_steps(relative: &str) -> (AppError, Vec<u64>) {
         &TrainingRuntime {
             probe_runner: root.join("must-never-run.exe"),
         },
-        &observer,
+        &Observe {
+            events: Mutex::default(),
+            cancel: Cancellation::new(),
+        },
         &Cancellation::new(),
     )
     .unwrap_err();
-    let project: ProjectManifest =
-        serde_json::from_slice(&fs::read(root.join("project.json")).unwrap()).unwrap();
-    assert!(project.checkpoints.is_empty());
-    (error, observer.steps.into_inner().unwrap())
-}
-
-#[test]
-fn unused_cache_artifact_is_rechecked_at_checkpoint_publication() {
-    let (error, steps) = corrupt_cache_between_steps("video.mkv");
-    assert_eq!(steps, [1, 2], "{error}");
     assert!(error.message.contains("Cache artifact corrupted"));
 }
 
 #[test]
-fn corrupted_sampled_frame_rejects_the_update() {
-    let (error, steps) = corrupt_cache_between_steps("frames/0.f32");
+fn truncated_sampled_frame_rejects_the_update() {
+    let (root, prepared) = training_fixture::fixture();
+    let (_, result, steps) = edit_frame_between_steps(&prepared, &training_fixture::device(), true);
+    let error = result.unwrap_err();
     assert_eq!(steps, [1]);
     assert_eq!(error.stage, "prepared-frame");
+    let project: ProjectManifest =
+        serde_json::from_slice(&fs::read(root.join("project.json")).unwrap()).unwrap();
+    assert!(project.checkpoints.is_empty());
 }

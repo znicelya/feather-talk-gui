@@ -1,13 +1,10 @@
 //! Versioned private process protocol; the only accepted success is a complete step.
 use super::{
     batch_probe::ProbeContext,
-    checkpoint::{MaterializedSnapshot, read_project},
-    state::invalid,
+    checkpoint::MaterializedSnapshot,
+    state::{TrainingData, invalid},
 };
-use crate::{
-    ExecutionDevice,
-    data::prepared::{PreparedProject, reopen_generation},
-};
+use crate::{ExecutionDevice, data::prepared::PreparedProject};
 use feathertalk_core::*;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -614,19 +611,13 @@ pub fn run_request(path: &Path) -> Result<()> {
     let outcome = (|| {
         let device = crate::open_device(&request.binding.device)?;
         let snapshot = MaterializedSnapshot::read_private(&dir.join("snapshot"))?;
-        let mut state = snapshot.restore(&request.project, &device)?;
+        let (mut state, prepared) = snapshot.restore_with_data(&request.project, &device)?;
         if state.metadata.global_step != request.binding.step
             || state.metadata.batch_mode != BatchMode::Auto
             || request.binding.candidate > state.metadata.requested_batch
         {
             return Err(invalid("Candidate differs from snapshot"));
         }
-        let prepared = reopen_generation(
-            &request.project,
-            &read_project(&request.project)?,
-            &state.metadata.preprocessing.cache_directory,
-            &state.metadata.prepared_manifest_sha256,
-        )?;
         let expected = request
             .binding
             .candidate
@@ -643,9 +634,10 @@ pub fn run_request(path: &Path) -> Result<()> {
         if vgg.identity() != &request.binding.vgg_identity {
             return Err(invalid("Probe VGG package changed after selection"));
         }
-        let step = super::trainer::complete_step(
+        let data = TrainingData::from_verified(&state, prepared)?;
+        let step = super::trainer::complete_step_validated(
             &mut state,
-            &prepared,
+            &data,
             &vgg,
             &device,
             &Cancellation::new(),
